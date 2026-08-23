@@ -1,0 +1,18 @@
+services:
+  postgres:
+    image: postgres:18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    ports:
+      # host:container -- 5442 to avoid clashing with a local default Postgres on 5432
+      - "5442:5432"
+    volumes:
+      # Postgres 18+ images expect a single mount at /var/lib/postgresql (not
+      # /var/lib/postgresql/data) -- they manage a versioned subdirectory themselves.
+      - postgres_data:/var/lib/postgresql
+
+volumes:
+  postgres_data:

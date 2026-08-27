@@ -16,6 +16,9 @@ dependencies = [
     # mlflow.langchain.autolog() unconditionally imports pandas internally, even though
     # we never touch it ourselves -- not part of mlflow-skinny, so it has to be explicit.
     "pandas>=2.2.0",
+    # Serves the all-MiniLM-L6-v2 embedding model via ONNX -- same model the
+    # sentence-transformers library would give us, without pulling in torch.
+    "fastembed>=0.4.0",
     "psycopg[binary,pool]>=3.2.0",
     "python-dotenv>=1.2.3",
 ]

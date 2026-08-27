@@ -1,7 +1,27 @@
 services:
   postgres:
-    image: postgres:18
+    # ParadeDB: Postgres 18.6 shipping both extensions the memory layer needs --
+    # pgvector (L2 dense retrieval) and pg_search (L1 BM25). Plain postgres:18 has
+    # neither: `CREATE EXTENSION` only *activates* an extension, it can't install
+    # one, so the compiled library has to already be in the image.
+    #
+    # Same Postgres major version as before, and the same data directory layout
+    # (PGDATA=/var/lib/postgresql/18/docker), so the existing volume carries over.
+    image: paradedb/paradedb:latest
     restart: unless-stopped
+    # pg_search hooks into the query planner, so it has to be loaded when the server
+    # starts, not when CREATE EXTENSION runs -- without this you get "pg_search must
+    # be loaded via shared_preload_libraries".
+    #
+    # The image only writes that setting into postgresql.conf when it initialises a
+    # NEW data directory, and postgresql.conf lives inside the data directory. A
+    # volume created by an earlier image therefore keeps its old config and never
+    # picks it up. Setting it here applies on every start, whatever the volume's
+    # history. pg_cron and pg_stat_statements are kept to match the image default.
+    command:
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_search,pg_cron,pg_stat_statements
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -13,6 +33,12 @@ services:
       # Postgres 18+ images expect a single mount at /var/lib/postgresql (not
       # /var/lib/postgresql/data) -- they manage a versioned subdirectory themselves.
       - postgres_data:/var/lib/postgresql
+      # Anything in /docker-entrypoint-initdb.d is run by the Postgres image the
+      # first time it initialises an empty data directory -- so a fresh `docker
+      # compose up` on a new machine gets the extension with no manual step.
+      # It does NOT re-run on an existing volume -- 01-extensions.sql says how to
+      # apply it by hand in that case.
+      - ./initdb:/docker-entrypoint-initdb.d:ro
 
 volumes:
   postgres_data:

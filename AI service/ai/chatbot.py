@@ -18,14 +18,19 @@ import mlflow
 import mlflow.langchain
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_core.messages import HumanMessage, RemoveMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
+from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.postgres import PostgresSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.message import add_messages
 from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 from typing_extensions import TypedDict
+
+from ai.memory.encoding_gate import evaluate
+from ai.memory.retrieval import retrieve
+from ai.memory.store import insert_memory, search_dense
 
 load_dotenv()
 
@@ -48,11 +53,18 @@ MAX_TOKENS = 8000
 # would otherwise start excluding it from the very next turn's prompt.
 SUMMARIZE_AFTER_TOKENS = 6000
 
+# How many memories to pull into context per turn, and how many nearby memories the
+# encoding gate looks at when deciding if a message is novel/contradictory. Both are
+# small because retrieved memories go straight into the prompt -- too many and they
+# start crowding out the actual conversation.
+RETRIEVE_LIMIT = 5
+
 
 # 1. State: what flows through the graph. `add_messages` appends instead of overwriting.
 class State(TypedDict):
     messages: Annotated[list, add_messages]
     summary: str
+    memory_context: str  # formatted, ready to drop into a SystemMessage; "" if nothing relevant
 
 
 # 2. The model.
@@ -64,12 +76,51 @@ llm = ChatGroq(model=MODEL_NAME)
 
 
 # 3. Nodes.
-def chatbot(state: State):
-    summary = state.get("summary", "")
+
+# TrueMemory context: retrieve_memories runs before chatbot and fills memory_context;
+# ingest_memory runs after and writes new memories from this turn. Between them they're
+# the whole long-term-memory loop -- everything either side of "ask the model" in this
+# node stays as it was.
+def retrieve_memories(state: State, config: RunnableConfig) -> dict:
+    """Pull this user's memories relevant to what they just said.
+
+    Runs first in the graph, so `state["messages"][-1]` is always the message that
+    just came in -- that's what's used as the retrieval query.
+    """
+    user_id = config["configurable"].get("user_id", "")
     messages = state["messages"]
 
+    if not user_id or not messages:
+        return {"memory_context": ""}
+
+    query = messages[-1].content
+    if not query:
+        return {"memory_context": ""}
+
+    hits = retrieve(user_id, query, limit=RETRIEVE_LIMIT)
+    if not hits:
+        return {"memory_context": ""}
+
+    memory_context = "\n".join(f"- {hit['content']}" for hit in hits)
+    return {"memory_context": memory_context}
+
+
+def chatbot(state: State):
+    summary = state.get("summary", "")
+    memory_context = state.get("memory_context", "")
+    messages = state["messages"]
+
+    # Memories first, summary second -- memories are patient-specific facts (retrieved
+    # fresh every turn, so they matter regardless of how the chat has drifted); the
+    # summary is this conversation's own recent thread. Both are optional independently.
+    system_parts = []
+    if memory_context:
+        system_parts.append(f"Relevant things you remember about this patient:\n{memory_context}")
     if summary:
-        messages = [SystemMessage(content=f"Summary of the conversation so far:\n{summary}")] + messages
+        system_parts.append(f"Summary of the conversation so far:\n{summary}")
+
+    if system_parts:
+        messages = [SystemMessage(content="\n\n".join(system_parts))] + messages
 
     # Cap what's actually sent to the LLM this turn -- doesn't touch persisted state.
     trimmed = trim_messages(
@@ -83,6 +134,48 @@ def chatbot(state: State):
 
     response = llm.invoke(trimmed)
     return {"messages": [response]}
+
+
+# TODO: same as summarize below -- runs synchronously in-graph, so every turn pays for
+# up to two embeddings (one per message) plus a dense search, before the request can
+# close. Small (milliseconds), unlike summarize's extra LLM call, but it's still on the
+# request path. Move both off it together later.
+def ingest_memory(state: State, config: RunnableConfig) -> dict:
+    """Run this turn's messages through the encoding gate; store what it admits.
+
+    Runs on BOTH sides of the conversation -- the patient's message and the
+    therapist's own reply -- since a thing the bot noticed out loud ("you've
+    mentioned insomnia three times") is itself worth remembering later.
+    """
+    user_id = config["configurable"].get("user_id", "")
+    if not user_id:
+        return {}
+
+    # The turn that just happened: whatever the user sent in, plus chatbot's reply.
+    # Filtering by type (not just "last 2") protects against ingest_memory ever running
+    # on a turn shaped differently than expected.
+    turn = [m for m in state["messages"][-2:] if isinstance(m, (HumanMessage, AIMessage))]
+
+    for message in turn:
+        text = message.content
+        if not text:
+            continue
+
+        role = "user" if isinstance(message, HumanMessage) else "assistant"
+
+        # Nearest existing memories on the same topic -- what the gate's novelty and
+        # prediction-error signals compare this message against. Dense (semantic)
+        # search only: the gate wants "does this restate/contradict something we
+        # already know", which is a meaning question, not a keyword one -- no need
+        # for the lexical side or RRF fusion that `retrieve()` does for prompt context.
+        nearby = search_dense(user_id, text, limit=RETRIEVE_LIMIT)
+        nearby_texts = [row["content"] for row in nearby]
+
+        decision = evaluate(text, nearby_texts)
+        if decision.should_encode:
+            insert_memory(user_id, role, text, decision)
+
+    return {}
 
 
 # TODO: this runs synchronously in-graph, so on whichever turn crosses SUMMARIZE_AFTER_TOKENS,
@@ -119,12 +212,16 @@ def should_summarize(state: State) -> str:
     return "summarize" if token_count > SUMMARIZE_AFTER_TOKENS else END
 
 
-# 4. Wire the graph: START -> chatbot -> (summarize) -> END.
+# 4. Wire the graph: START -> retrieve_memories -> chatbot -> ingest_memory -> (summarize) -> END.
 graph_builder = StateGraph(State)
+graph_builder.add_node("retrieve_memories", retrieve_memories)
 graph_builder.add_node("chatbot", chatbot)
+graph_builder.add_node("ingest_memory", ingest_memory)
 graph_builder.add_node("summarize", summarize)
-graph_builder.add_edge(START, "chatbot")
-graph_builder.add_conditional_edges("chatbot", should_summarize, {"summarize": "summarize", END: END})
+graph_builder.add_edge(START, "retrieve_memories")
+graph_builder.add_edge("retrieve_memories", "chatbot")
+graph_builder.add_edge("chatbot", "ingest_memory")
+graph_builder.add_conditional_edges("ingest_memory", should_summarize, {"summarize": "summarize", END: END})
 graph_builder.add_edge("summarize", END)
 
 # Postgres-backed checkpointer -- conversation history survives process restarts.
@@ -151,7 +248,9 @@ graph = graph_builder.compile(checkpointer=checkpointer)
 
 
 if __name__ == "__main__":
-    config = {"configurable": {"thread_id": "1"}}
+    # user_id is required for retrieve_memories/ingest_memory to do anything -- without
+    # it they silently no-op, same as when the API omits it.
+    config = {"configurable": {"thread_id": "1", "user_id": "1"}}
 
     print("Type 'quit' to exit.")
 

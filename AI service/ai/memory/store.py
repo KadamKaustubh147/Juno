@@ -78,16 +78,24 @@ def search_lexical(user_id: str, query: str, limit: int = 10) -> list[dict]:
     """L1 -- exact word matches, ranked by BM25 relevance (best first).
 
     `@@@` is pg_search's match operator; `paradedb.score(id)` is its BM25
-    score for the row just matched. Misses paraphrases entirely ("the new
-    medication" won't match "sertraline") but catches exact rare terms that
-    the embedding search can blur away -- that's what search_dense is for.
+    score for the row just matched. Misses paraphrases entirely ("their
+    coursework" won't match "data science") but catches exact rare terms the
+    embedding search can blur away -- that's what search_dense is for.
+
+    The query text is wrapped in `paradedb.match(field, text)` rather than
+    passed straight to `@@@`. Bare `@@@ %s` parses its right-hand side as
+    pg_search's own query language (colons, quotes, AND/OR are all syntax
+    there), so a real message containing any of those characters -- an
+    apostrophe in "student's", say -- throws a parse error instead of
+    searching for it. `paradedb.match()` treats the text as literal data to
+    search for, the way a search box would, not as a mini query to parse.
     """
     with get_pool().connection() as conn:
         rows = conn.execute(
             """
             SELECT id, content
             FROM memories
-            WHERE user_id = %s AND content @@@ %s
+            WHERE user_id = %s AND content @@@ paradedb.match('content', %s)
             ORDER BY paradedb.score(id) DESC
             LIMIT %s
             """,

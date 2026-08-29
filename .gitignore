@@ -18,6 +18,7 @@ coverage
 # Turbo
 .turbo
 
+
 # Vercel
 .vercel
 
@@ -38,3 +39,15 @@ yarn-error.log*
 *.pem
 
 mlartifacts/
+
+mlflow.db
+
+*.db
+
+opencode.json
+
+.opencode/
+
+.claude/
+# opencode diff plugin
+.opencode-tmp/

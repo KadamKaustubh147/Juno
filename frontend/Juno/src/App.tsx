@@ -1,5 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { fetchMessages, streamChat, type ChatMsg } from './api'
+
+// Tight variants of the default markdown elements -- the browser/prose defaults add
+// margins sized for full documents, which looks wrong inside a compact chat bubble.
+const markdownComponents = {
+  p: ({ ...props }) => <p className="[&:not(:last-child)]:mb-2" {...props} />,
+  ul: ({ ...props }) => <ul className="mb-2 list-disc pl-5 last:mb-0" {...props} />,
+  ol: ({ ...props }) => <ol className="mb-2 list-decimal pl-5 last:mb-0" {...props} />,
+  li: ({ ...props }) => <li className="mb-0.5" {...props} />,
+  a: ({ ...props }) => <a className="underline" target="_blank" rel="noreferrer" {...props} />,
+  code: ({ ...props }) => <code className="rounded bg-black/10 px-1 py-0.5 text-[0.9em]" {...props} />,
+  pre: ({ ...props }) => (
+    <pre className="mb-2 overflow-x-auto rounded-lg bg-black/10 p-2 text-[0.9em] last:mb-0" {...props} />
+  ),
+}
 
 // ponytail: single local user until auth exists
 const USER_ID = 'kaustubh'
@@ -138,7 +154,7 @@ function App() {
       </aside>
 
       {/* Chat */}
-      <main className="flex min-w-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col">
         <header className="flex items-center justify-between border-b border-line px-6 py-3.5">
           <div className="flex items-baseline gap-2">
             <strong className="text-sm text-ink">Session</strong>
@@ -149,26 +165,43 @@ function App() {
           </button>
         </header>
 
-        <div ref={scrollRef} onScroll={onScroll} className="flex flex-1 flex-col justify-end gap-2.5 overflow-y-auto p-6">
-          {loadingOlder && <div className="text-center text-xs text-muted">Loading…</div>}
-          {hasMore && !loadingOlder && (
-            <button onClick={loadOlder} className="mx-auto text-xs text-muted hover:text-ink">
-              Load earlier messages
-            </button>
-          )}
-          {messages.map((m) => (
-            <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
-              <div
-                className={`max-w-[62%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
-                  m.role === 'assistant'
-                    ? 'rounded-tl-md bg-sage-light font-serif text-sage-dark'
-                    : 'rounded-tr-md bg-white text-ink shadow-sm'
-                }`}
-              >
-                {m.content || (streaming ? '…' : '')}
+        <div ref={scrollRef} onScroll={onScroll} className="flex-1 overflow-y-auto p-6">
+          {/* justify-end lives on this inner wrapper, not the scrollable div itself --
+              justify-content other than flex-start on an overflowing flex container
+              clips the start-side overflow instead of making it scrollable (a real
+              Chromium/Firefox quirk, not a spec requirement -- see "safe alignment").
+              min-h-full keeps short conversations bottom-anchored without that bug. */}
+          <div className="flex min-h-full flex-col justify-end gap-2.5">
+            {loadingOlder && <div className="text-center text-xs text-muted">Loading…</div>}
+            {hasMore && !loadingOlder && (
+              <button onClick={loadOlder} className="mx-auto text-xs text-muted hover:text-ink">
+                Load earlier messages
+              </button>
+            )}
+            {messages.map((m) => (
+              <div key={m.id} className={`flex ${m.role === 'user' ? 'justify-end' : 'justify-start'}`}>
+                <div
+                  className={`max-w-[62%] rounded-2xl px-4 py-3 text-[15px] leading-relaxed ${
+                    m.role === 'assistant'
+                      ? 'rounded-tl-md bg-sage-light font-serif text-sage-dark'
+                      : 'rounded-tr-md bg-white text-ink shadow-sm'
+                  }`}
+                >
+                  {m.role === 'assistant' ? (
+                    m.content ? (
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={markdownComponents}>
+                        {m.content}
+                      </ReactMarkdown>
+                    ) : (
+                      streaming && '…'
+                    )
+                  ) : (
+                    m.content
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            ))}
+          </div>
         </div>
 
         <footer className="flex gap-2.5 border-t border-line px-6 pt-4 pb-5">

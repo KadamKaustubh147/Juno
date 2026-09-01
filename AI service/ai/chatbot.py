@@ -1,4 +1,4 @@
-"""Minimal LangChain + LangGraph boilerplate, wired to Groq.
+"""Minimal LangChain + LangGraph boilerplate, wired to an OpenAI-compatible endpoint.
 
 Short-term memory strategy:
 - Every turn, `chatbot` sends the model only a token-capped window of the raw
@@ -17,7 +17,7 @@ from typing import Annotated
 import mlflow
 import mlflow.langchain
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.runnables import RunnableConfig
@@ -69,10 +69,12 @@ class State(TypedDict):
 
 # 2. The model.
 
-# qwen can used for script based processing tasks
-# MODEL_NAME = "qwen/qwen3.6-27b"
-MODEL_NAME = "openai/gpt-oss-20b"
-llm = ChatGroq(model=MODEL_NAME)
+MODEL_NAME = "openai/gpt-oss-120b"
+llm = ChatOpenAI(
+    model=MODEL_NAME,
+    base_url="https://aicredits.in/v1",
+    api_key=os.environ["AICREDITS_API_KEY"],
+)
 
 
 # 3. Nodes.

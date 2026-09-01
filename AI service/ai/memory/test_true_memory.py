@@ -33,7 +33,7 @@ TEST_THREAD_ID = "test-student-mock-thread-1"
 
 # Three fake sessions with a burnt-out college student. Notes mark what each
 # USER message is meant to demonstrate on the gate -- there's no equivalent
-# list for assistant messages, since we don't write those; Groq does.
+# list for assistant messages, since we don't write those; the LLM does.
 MOCK_MESSAGES = [
     # --- Session 1: establishing facts ---
     ("Hey, I guess I'm here because I've been feeling really burnt out with school lately.",

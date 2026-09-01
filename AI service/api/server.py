@@ -7,12 +7,24 @@ Then POST to http://localhost:8000/chat
 """
 
 from fastapi import FastAPI, Query
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from ai.chatbot import connection_pool, graph
 
 app = FastAPI(title="AI Therapist Chatbot")
+
+# The frontend (Vite dev server) runs on a different origin, so without this the
+# browser blocks every request at the CORS preflight (OPTIONS) before it even
+# reaches this app -- streaming, memory, everything looks "broken" from the
+# frontend even though the API itself works fine (curl doesn't send preflights).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 class ChatRequest(BaseModel):

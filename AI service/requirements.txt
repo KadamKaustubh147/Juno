@@ -1,6 +1,6 @@
 langchain
 langgraph
-langchain-groq
+langchain-openai
 python-dotenv
 fastapi
 uvicorn

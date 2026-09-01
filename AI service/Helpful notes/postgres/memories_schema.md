@@ -1,21 +1,10 @@
-CREATE TABLE memories (
-    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    user_id           TEXT NOT NULL,
-    role              TEXT NOT NULL,
-    content           TEXT NOT NULL,
-    embedding         VECTOR(384),
-    novelty           REAL NOT NULL,
-    salience          REAL NOT NULL,
-    prediction_error  REAL NOT NULL,
-    score             REAL NOT NULL,
-    created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
-);
+The `memories` table schema now lives in `initdb/03-memories.sql` (auto-applied on a
+fresh Postgres volume, same as `messages` — see `initdb/02-messages.sql`). This file
+used to hold a copy of the schema that had to be pasted in by hand; that copy is
+gone to avoid the two drifting apart.
 
-CREATE INDEX memories_embedding_hnsw
-    ON memories USING hnsw (embedding vector_cosine_ops);
+On an existing volume where init scripts don't re-run, apply it manually:
 
-CREATE INDEX memories_content_bm25
-    ON memories USING bm25 (id, content)
-    WITH (key_field = 'id');
-
-CREATE INDEX memories_user_id ON memories (user_id);
+```sh
+docker compose exec postgres psql -U postgres -f /docker-entrypoint-initdb.d/03-memories.sql
+```

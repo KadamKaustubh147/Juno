@@ -2,8 +2,8 @@
 
 Drives the actual compiled graph from chatbot.py rather than reimplementing its
 retrieve_memories/chatbot/ingest_memory logic here -- so retrieval, the real
-Groq LLM call, and the encoding gate all run exactly as they would in
-production, on both message roles. The assistant's replies are genuine Groq
+LLM call, and the encoding gate all run exactly as they would in
+production, on both message roles. The assistant's replies are genuine LLM
 output, not scripted text: the "does the gate correctly handle assistant
 messages too" question gets tested against what the bot actually says, not
 against text we assumed it would say.
@@ -17,7 +17,7 @@ compare against a scripted expectation for the assistant side.
 Requires:
 - Postgres running (docker compose up -d) with the `memories` table already
   created (see Helpful notes/postgres/)
-- GROQ_API_KEY set -- this makes one real Groq API call per message
+- AICREDITS_API_KEY set -- this makes one real LLM API call per message
 
 Run (from the "AI service" directory):
     uv run python -m ai.memory.test_true_memory
@@ -33,7 +33,7 @@ TEST_THREAD_ID = "test-student-mock-thread-1"
 
 # Three fake sessions with a burnt-out college student. Notes mark what each
 # USER message is meant to demonstrate on the gate -- there's no equivalent
-# list for assistant messages, since we don't write those; Groq does.
+# list for assistant messages, since we don't write those; the LLM does.
 MOCK_MESSAGES = [
     # --- Session 1: establishing facts ---
     ("Hey, I guess I'm here because I've been feeling really burnt out with school lately.",

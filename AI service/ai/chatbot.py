@@ -17,7 +17,8 @@ from typing import Annotated
 import mlflow
 import mlflow.langchain
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
+# from langchain_groq import ChatGroq
+from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
 from langchain_core.runnables import RunnableConfig
@@ -39,9 +40,9 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 # Per MLflow's own tracing quickstart: point at a running `mlflow server`, set an
 # experiment to group traces under, then autolog. Start the server yourself first:
 #   uvx mlflow server
-mlflow.set_tracking_uri("http://localhost:5000")
-mlflow.set_experiment("ai-therapist-chatbot")
-mlflow.langchain.autolog()
+# mlflow.set_tracking_uri("http://localhost:5000")
+# mlflow.set_experiment("ai-therapist-chatbot")
+# mlflow.langchain.autolog()
 
 # How much of the raw history to actually send the LLM each turn. Model window is 131k
 # tokens; this is just a guard-rail against a handful of oversized messages, not a lever
@@ -71,8 +72,8 @@ class State(TypedDict):
 
 # qwen can used for script based processing tasks
 # MODEL_NAME = "qwen/qwen3.6-27b"
-MODEL_NAME = "openai/gpt-oss-20b"
-llm = ChatGroq(model=MODEL_NAME)
+MODEL_NAME = "openai/gpt-oss-120b"
+llm = ChatOpenAI(model=MODEL_NAME, base_url="https://aicredits.in/v1")
 
 
 # 3. Nodes.

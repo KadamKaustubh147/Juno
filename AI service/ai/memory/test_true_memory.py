@@ -147,3 +147,18 @@ if __name__ == "__main__":
         for hit in hits:
             print(f"  [{hit['rrf_score']:.4f}] {hit['content']}")
         print()
+
+    # ponytail: interactive retrieval check, ctrl-c/empty line to quit
+    print("=== Try your own queries (empty line to quit) ===")
+    while True:
+        try:
+            query = input("\nquery> ").strip()
+        except (EOFError, KeyboardInterrupt):
+            break
+        if not query:
+            break
+        hits = retrieve(TEST_USER_ID, query, limit=5)
+        if not hits:
+            print("  (no memories retrieved)")
+        for hit in hits:
+            print(f"  [{hit['rrf_score']:.4f}] {hit['content']}")

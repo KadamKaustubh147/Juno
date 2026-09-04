@@ -40,5 +40,17 @@ services:
       # apply it by hand in that case.
       - ./initdb:/docker-entrypoint-initdb.d:ro
 
+  # Read/browse UI for the DB (tables, rows, ad-hoc SQL) at http://localhost:8081
+  pgweb:
+    image: sosedoff/pgweb:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://postgres:postgres@postgres:5432/juno?sslmode=disable
+    ports:
+      # loopback only -- it's a dev tool with no auth of its own
+      - "127.0.0.1:8081:8081"
+    depends_on:
+      - postgres
+
 volumes:
   postgres_data:

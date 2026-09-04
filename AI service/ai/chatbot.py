@@ -17,10 +17,6 @@ from typing import Annotated
 import mlflow
 import mlflow.langchain
 from dotenv import load_dotenv
-<<<<<<< HEAD
-# from langchain_groq import ChatGroq
-=======
->>>>>>> a5e69dda97c7aaf5d43531a227cf12eee3f8b3c5
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, SystemMessage
 from langchain_core.messages.utils import count_tokens_approximately, trim_messages
@@ -73,19 +69,12 @@ class State(TypedDict):
 
 # 2. The model.
 
-<<<<<<< HEAD
-# qwen can used for script based processing tasks
-# MODEL_NAME = "qwen/qwen3.6-27b"
-MODEL_NAME = "openai/gpt-oss-120b"
-llm = ChatOpenAI(model=MODEL_NAME, base_url="https://aicredits.in/v1")
-=======
 MODEL_NAME = "openai/gpt-oss-120b"
 llm = ChatOpenAI(
     model=MODEL_NAME,
     base_url="https://aicredits.in/v1",
     api_key=os.environ["AICREDITS_API_KEY"],
 )
->>>>>>> a5e69dda97c7aaf5d43531a227cf12eee3f8b3c5
 
 
 # 3. Nodes.

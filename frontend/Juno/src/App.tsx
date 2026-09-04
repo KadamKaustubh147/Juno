@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { fetchMessages, streamChat, type ChatMsg } from './api'
+import { fetchMessages, fetchSessions, streamChat, type ChatMsg, type SessionSummary } from './api'
 
 // Tight variants of the default markdown elements -- the browser/prose defaults add
 // margins sized for full documents, which looks wrong inside a compact chat bubble.
@@ -26,13 +26,15 @@ function App() {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [streaming, setStreaming] = useState(false)
   const [draft, setDraft] = useState('')
-  // mirrors threadId.current for rendering (refs can't be read during render)
-  const [hasThread, setHasThread] = useState(false)
-
-  // Existing chat restores via ?thread=<id>; a new chat gets its id on first send.
-  const threadId = useRef<string | null>(
+  const [sessions, setSessions] = useState<SessionSummary[]>([])
+  // id of the thread being viewed; mirrors threadId.current for rendering
+  // (refs can't be read during render)
+  const [activeThread, setActiveThread] = useState<string | null>(
     new URLSearchParams(window.location.search).get('thread'),
   )
+
+  // Existing chat restores via ?thread=<id>; a new chat gets its id on first send.
+  const threadId = useRef<string | null>(activeThread)
   const scrollRef = useRef<HTMLDivElement>(null)
   // scrollHeight of the list before older messages are prepended; used to keep
   // the viewport anchored on the same messages after they shift down.
@@ -41,9 +43,11 @@ function App() {
   const busy = useRef(false)
 
   useEffect(() => {
+    fetchSessions(USER_ID)
+      .then((res) => setSessions(res.sessions))
+      .catch(() => {})
     const tid = threadId.current
     if (!tid) return
-    setHasThread(true)
     fetchMessages(tid)
       .then((res) => {
         setMessages(res.messages)
@@ -81,12 +85,40 @@ function App() {
     if (scrollRef.current && scrollRef.current.scrollTop < 80) loadOlder()
   }
 
+  const newSession = () => {
+    if (streaming) return
+    threadId.current = null
+    setActiveThread(null)
+    setMessages([])
+    setHasMore(false)
+    setDraft('')
+    // drop ?thread= so a refresh doesn't restore the old chat
+    window.history.replaceState(null, '', window.location.pathname)
+  }
+
+  const openSession = (tid: string) => {
+    if (streaming || tid === threadId.current) return
+    threadId.current = tid
+    setActiveThread(tid)
+    setMessages([])
+    setHasMore(false)
+    window.history.replaceState(null, '', `?thread=${tid}`)
+    fetchMessages(tid)
+      .then((res) => {
+        setMessages(res.messages)
+        setHasMore(res.has_more)
+      })
+      .catch(() => {})
+  }
+
   const send = async () => {
     const text = draft.trim()
     if (!text || streaming) return
     if (!threadId.current) {
       threadId.current = crypto.randomUUID()
-      setHasThread(true)
+      setActiveThread(threadId.current)
+      // persist the id so a refresh restores this session
+      window.history.replaceState(null, '', `?thread=${threadId.current}`)
     }
 
     const sentAt = Date.now()
@@ -118,6 +150,9 @@ function App() {
       })
     } finally {
       setStreaming(false)
+      fetchSessions(USER_ID)
+        .then((res) => setSessions(res.sessions))
+        .catch(() => {})
     }
   }
 
@@ -131,26 +166,33 @@ function App() {
           </span>
           <span className="font-semibold text-ink">Kaustubh</span>
         </div>
-        <button className="rounded-[10px] bg-sage py-3 text-sm font-semibold text-cream hover:bg-sage-dark">
+        <button
+          onClick={newSession}
+          className="rounded-[10px] bg-sage py-3 text-sm font-semibold text-cream hover:bg-sage-dark"
+        >
           Start a session
         </button>
         <div className="text-[11px] uppercase tracking-widest text-muted">This month</div>
         <ul className="flex flex-col gap-1.5">
-          {!hasThread && (
+          {sessions.length === 0 && !activeThread && (
             <li className="px-3 text-xs text-muted">No sessions yet</li>
           )}
+          {sessions.map((s) => (
+            <li key={s.thread_id}>
+              <button
+                onClick={() => openSession(s.thread_id)}
+                className={`w-full rounded-lg px-3 py-2 text-left text-[13px] hover:bg-cream-dark ${
+                  s.thread_id === activeThread ? 'bg-cream-dark text-ink' : 'text-ink/70'
+                }`}
+              >
+                <span className="block truncate">Session</span>
+                <span className="block text-[11px] text-muted">
+                  {new Date(s.last_at).toLocaleDateString()}
+                </span>
+              </button>
+            </li>
+          ))}
         </ul>
-        <nav className="mt-auto flex flex-col gap-2">
-          <a href="#" className="text-[13px] text-ink/60 hover:text-ink">
-            Journal
-          </a>
-          <a href="#" className="text-[13px] text-ink/60 hover:text-ink">
-            Exercises
-          </a>
-          <a href="#" className="text-[13px] text-ink/60 hover:text-ink">
-            Privacy &amp; access
-          </a>
-        </nav>
       </aside>
 
       {/* Chat */}

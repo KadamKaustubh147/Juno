@@ -6,6 +6,19 @@ export type ChatMsg = {
 
 const BASE = import.meta.env.VITE_API_URL ?? 'http://localhost:8000'
 
+export type SessionSummary = {
+  thread_id: string
+  last_at: string
+}
+
+export async function fetchSessions(userId: string) {
+  const url = new URL(`${BASE}/sessions`)
+  url.searchParams.set('user_id', userId)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`fetchSessions failed: ${res.status}`)
+  return (await res.json()) as { sessions: SessionSummary[] }
+}
+
 export async function fetchMessages(threadId: string, before?: number) {
   const url = new URL(`${BASE}/messages`)
   url.searchParams.set('thread_id', threadId)

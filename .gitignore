@@ -51,3 +51,8 @@ opencode.json
 .claude/
 # opencode diff plugin
 .opencode-tmp/
+
+
+*.pyc
+
+__pycache__/

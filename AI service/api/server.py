@@ -78,6 +78,29 @@ def chat(request: ChatRequest):
     return StreamingResponse(stream_reply(request), media_type="text/plain")
 
 
+@app.get("/sessions")
+def sessions(user_id: str):
+    """Sidebar list: this user's threads, most recently active first."""
+    with connection_pool.connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT thread_id, max(created_at) AS last_at
+            FROM messages
+            WHERE user_id = %s
+            GROUP BY thread_id
+            ORDER BY last_at DESC
+            LIMIT 50
+            """,
+            (user_id,),
+        ).fetchall()
+
+    return {
+        "sessions": [
+            {"thread_id": r["thread_id"], "last_at": r["last_at"].isoformat()} for r in rows
+        ]
+    }
+
+
 @app.get("/messages")
 def messages(thread_id: str, before: int | None = None, limit: int = Query(default=20, le=50)):
     """Lazy-loaded scrollback: newest page first, older pages via `before`.

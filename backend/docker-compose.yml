@@ -1,0 +1,15 @@
+services:
+  # Read/browse UI for the DB (tables, rows, ad-hoc SQL) at http://localhost:8081.
+  # Postgres itself now lives on Aiven -- there's no local `postgres` service to
+  # depend on, so this just points at the same DATABASE_URL the app uses
+  # (docker compose reads .env in this directory for variable substitution).
+  # Aiven's connection string already includes sslmode=require -- don't append
+  # another one here, it'd produce an invalid URI.
+  pgweb:
+    image: sosedoff/pgweb:latest
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+    ports:
+      # loopback only -- it's a dev tool with no auth of its own
+      - "127.0.0.1:8081:8081"

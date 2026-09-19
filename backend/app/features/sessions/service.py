@@ -1,67 +1,106 @@
-"""Sessions logic: the `messages` archive and the queries that read it back for scrollback."""
+"""Sessions logic: therapy sessions, the message archive, and scrollback queries."""
 
-from app.core.db import connection_pool
+import uuid
+
+from sqlalchemy import func, select, tuple_
+from sqlalchemy.orm import Session
+
+from app.core.exceptions import ForbiddenError, NotFoundError
+from app.features.sessions.models import Message, MessageRole, TherapySession
+from app.features.users.models import User
+from app.shared.constants import DEFAULT_SCRIPT_ID, DEFAULT_SECTION
 
 
-def archive(thread_id: str, user_id: str, role: str, content: str):
-    """Append one message to the `messages` archive (see initdb/02-messages.sql).
+def ensure_session(db: Session, session_id: uuid.UUID, user_id: uuid.UUID) -> TherapySession:
+    """Return the session with this id, creating it on a thread's first message.
+
+    The id is the thread_id the client generated. A new row gets the interim
+    script/section from app/shared/constants.py until the scripts feature sets real ones.
+    """
+    therapy_session = db.get(TherapySession, session_id)
+
+    if therapy_session is None:
+        if db.get(User, user_id) is None:
+            raise NotFoundError("user not found")
+        therapy_session = TherapySession(
+            id=session_id,
+            user_id=user_id,
+            script_id=DEFAULT_SCRIPT_ID,
+            current_section=DEFAULT_SECTION,
+        )
+        db.add(therapy_session)
+        db.flush()
+    elif therapy_session.user_id != user_id:
+        raise ForbiddenError("session belongs to another user")
+
+    return therapy_session
+
+
+def archive(db: Session, session_id: uuid.UUID, role: MessageRole, content: str) -> Message:
+    """Append one message to the archive.
 
     The checkpoint prunes old turns when `summarize` fires; this table keeps
     every message verbatim for scrollback. Never read by the graph.
     """
-    with connection_pool.connection() as conn:
-        conn.execute(
-            "INSERT INTO messages (thread_id, user_id, role, content) VALUES (%s, %s, %s, %s)",
-            (thread_id, user_id, role, content),
-        )
+    therapy_session = db.get(TherapySession, session_id)
+    if therapy_session is None:
+        raise NotFoundError("session not found")
+
+    message = Message(
+        session_id=session_id,
+        role=role,
+        content=content,
+        section_at_time=therapy_session.current_section,
+    )
+    db.add(message)
+    db.flush()
+    return message
 
 
-def list_sessions(user_id: str) -> dict:
+def list_sessions(db: Session, user_id: uuid.UUID) -> dict:
     """Sidebar list: this user's threads, most recently active first."""
-    with connection_pool.connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT thread_id, max(created_at) AS last_at
-            FROM messages
-            WHERE user_id = %s
-            GROUP BY thread_id
-            ORDER BY last_at DESC
-            LIMIT 50
-            """,
-            (user_id,),
-        ).fetchall()
+    last_at = func.max(Message.created_at)
+    rows = db.execute(
+        select(TherapySession.id, last_at.label("last_at"))
+        .join(Message, Message.session_id == TherapySession.id)
+        .where(TherapySession.user_id == user_id)
+        .group_by(TherapySession.id)
+        .order_by(last_at.desc())
+        .limit(50)
+    ).all()
 
     return {
-        "sessions": [
-            {"thread_id": r["thread_id"], "last_at": r["last_at"].isoformat()} for r in rows
-        ]
+        "sessions": [{"thread_id": str(row.id), "last_at": row.last_at.isoformat()} for row in rows]
     }
 
 
-def list_messages(thread_id: str, before: int | None, limit: int) -> dict:
+def list_messages(
+    db: Session, thread_id: uuid.UUID, before: uuid.UUID | None, limit: int
+) -> dict:
     """Lazy-loaded scrollback: newest page first, older pages via `before`.
 
-    `before` is the smallest message id the client currently has; each page is
-    the `limit` rows older than it. `has_more` says whether another page exists.
+    `before` is the id of the oldest message the client currently has; each page is
+    the `limit` messages older than it, ordered by (created_at, id) so ties break
+    deterministically. `has_more` says whether another page exists.
     """
-    with connection_pool.connection() as conn:
-        # The pool is created with row_factory=dict_row (a PostgresSaver requirement,
-        # see app/core/db.py), so rows come back as dicts.
-        rows = conn.execute(
-            """
-            SELECT id, role, content
-            FROM messages
-            WHERE thread_id = %s AND (%s::bigint IS NULL OR id < %s)
-            ORDER BY id DESC
-            LIMIT %s
-            """,
-            (thread_id, before, before, limit),
-        ).fetchall()
+    statement = select(Message).where(Message.session_id == thread_id)
+
+    if before is not None:
+        cursor = db.get(Message, before)
+        if cursor is None or cursor.session_id != thread_id:
+            raise NotFoundError("cursor message not found in this thread")
+        statement = statement.where(
+            tuple_(Message.created_at, Message.id) < tuple_(cursor.created_at, cursor.id)
+        )
+
+    rows = db.scalars(
+        statement.order_by(Message.created_at.desc(), Message.id.desc()).limit(limit)
+    ).all()
 
     return {
         # reverse: DESC query, but clients render chronological
         "messages": [
-            {"id": row["id"], "role": row["role"], "content": row["content"]}
+            {"id": str(row.id), "role": row.role.value, "content": row.content}
             for row in reversed(rows)
         ],
         "has_more": len(rows) == limit,

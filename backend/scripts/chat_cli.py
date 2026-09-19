@@ -3,15 +3,16 @@
 Run (from the "backend" directory):
     uv run python -m scripts.chat_cli
 
-Needs Postgres reachable via DATABASE_URL, same as the API.
+Needs the database migrated and the dev user seeded (`python -m scripts.seed_dev_user`).
 """
 
 from app.orchestration.graph import graph
+from scripts.seed_dev_user import DEV_USER_ID
 
 if __name__ == "__main__":
     # user_id is required for retrieve_memories/ingest_memory to do anything -- without
     # it they silently no-op, same as when the API omits it.
-    config = {"configurable": {"thread_id": "1", "user_id": "1"}}
+    config = {"configurable": {"thread_id": "1", "user_id": str(DEV_USER_ID)}}
 
     print("Type 'quit' to exit.")
 

@@ -1,77 +1,46 @@
-"""Reads and writes to the `memories` table.
+"""Reads and writes to the `memories` table (SQLAlchemy ORM).
 
-Owns its own connection pool, separate from app/core/db.py's -- the memory layer
-should work (and be testable) without importing the whole graph.
+Uses the shared engine from app/db/session.py, one short-lived session per call --
+these functions run inside graph nodes, not inside a request-scoped session.
 
-No `pgvector` Python package here on purpose: psycopg doesn't know how to
-convert a VECTOR column on its own, but the fix needs no extra dependency --
-format the embedding as a string and let Postgres itself cast it
-(`%s::vector`). That package earns its keep in a codebase with vector code
-scattered across many files; here it's one write path and two read paths.
+`user_id` stays a plain string at this module's boundary (that's what the graph's
+config carries); it's converted to a UUID here, since `memories.user_id` is a real
+foreign key to `users`.
 """
 
-import os
+import uuid
 
-from dotenv import load_dotenv
-from psycopg.rows import dict_row
-from psycopg_pool import ConnectionPool
+from sqlalchemy import Text, cast, func, literal_column, select
+from sqlalchemy.dialects.postgresql import TSQUERY
 
+from app.db.session import session_scope
 from app.memory.encoding_gate import EncodingDecision
 from app.memory.semantic.embeddings import embed
-
-# Loaded here too (app/config.py also calls this) so this module reads DATABASE_URL
-# correctly regardless of import order -- it shouldn't depend on whichever other
-# module happens to import it first having already loaded .env. load_dotenv() is
-# a no-op if the environment is already populated (e.g. real env vars in prod).
-load_dotenv()
-
-DATABASE_URL = os.environ["DATABASE_URL"]
-
-_pool: ConnectionPool | None = None
+from app.memory.semantic.models import Memory
 
 
-def get_pool() -> ConnectionPool:
-    """Return the shared connection pool, opening it on first call."""
-    global _pool
-    if _pool is None:
-        _pool = ConnectionPool(
-            conninfo=DATABASE_URL,
-            max_size=10,
-            kwargs={"autocommit": True, "row_factory": dict_row},
-        )
-    return _pool
-
-
-def _vector_literal(values: list[float]) -> str:
-    """Format a Python list the way `::vector` expects to parse it: '[0.1,0.2,...]'."""
-    return "[" + ",".join(repr(v) for v in values) + "]"
-
-
-def insert_memory(user_id: str, role: str, content: str, decision: EncodingDecision) -> str:
+def insert_memory(user_id: str, role: str, content: str, decision: EncodingDecision) -> uuid.UUID:
     """Store a message the encoding gate admitted. Returns the new row's id.
 
     `decision` is the EncodingDecision the gate already computed for this
     message -- its scores are stored alongside the memory rather than
     recomputed, so we always know *why* something was kept.
     """
-    embedding = _vector_literal(embed(content))
+    memory = Memory(
+        user_id=uuid.UUID(user_id),
+        role=role,
+        content=content,
+        embedding=embed(content),
+        novelty=decision.novelty,
+        salience=decision.salience,
+        prediction_error=decision.prediction_error,
+        score=decision.score,
+    )
 
-    with get_pool().connection() as conn:
-        row = conn.execute(
-            """
-            INSERT INTO memories
-                (user_id, role, content, embedding, novelty, salience, prediction_error, score)
-            VALUES
-                (%s, %s, %s, %s::vector, %s, %s, %s, %s)
-            RETURNING id
-            """,
-            (
-                user_id, role, content, embedding,
-                decision.novelty, decision.salience, decision.prediction_error, decision.score,
-            ),
-        ).fetchone()
-
-    return row["id"]
+    with session_scope() as db:
+        db.add(memory)
+        db.flush()
+        return memory.id
 
 
 def search_lexical(user_id: str, query: str, limit: int = 10, role: str | None = None) -> list[dict]:
@@ -81,8 +50,8 @@ def search_lexical(user_id: str, query: str, limit: int = 10, role: str | None =
     Aiven (like every managed Postgres) only allows a curated extension
     allowlist and won't load a custom `shared_preload_libraries` entry, so
     pg_search's BM25 index isn't installable there. `content_tsv` is a STORED
-    generated column (see the memories table DDL) with a GIN index, so this is
-    still a pure index scan, not a per-query re-tokenization.
+    generated column with a GIN index, so this is still a pure index scan, not
+    a per-query re-tokenization.
 
     `ts_rank_cd` (cover density: rewards matched terms that are close together)
     is the closest core-Postgres analogue to a relevance score. It isn't real
@@ -91,37 +60,43 @@ def search_lexical(user_id: str, query: str, limit: int = 10, role: str | None =
     ("their coursework" won't match "data science") but catches exact rare
     terms the embedding search can blur away -- that's what search_dense is for.
 
-    The query text goes through `websearch_to_tsquery`, not `to_tsquery`.
-    `to_tsquery` parses its argument as its own mini query language (`&`, `|`,
-    `!`, `:*`), so a real message containing any of those characters -- an
-    apostrophe in "student's", say -- throws a parse error instead of
-    searching for it. `websearch_to_tsquery` treats the text the way a search
-    box would (quotes and `-exclude` are handled, everything else literal).
+    The query text goes through `plainto_tsquery`, not `to_tsquery`. `to_tsquery`
+    parses its argument as its own mini query language (`&`, `|`, `!`, `:*`), so a
+    real message containing any of those characters -- an apostrophe in "student's",
+    say -- throws a parse error instead of searching for it. `plainto_tsquery` treats
+    the text as literal data: punctuation is just a separator, never an operator.
+    (`websearch_to_tsquery` looked like the search-box option, but it turns "part-time"
+    into a phrase and "-5" into a negation, both wrong for chat text.)
+
+    `plainto_tsquery` ANDs every term, which would require a memory to contain every
+    word of a whole chat message and so match almost nothing. The old ParadeDB
+    `match()` matched documents containing ANY of the terms, ranked by relevance, so
+    the `&` is swapped for `|` to keep that behavior -- `ts_rank_cd` still puts the
+    memories covering the most terms first.
 
     `role` is optional and unfiltered by default -- `ingest_memory`'s
     contradiction check wants nearby memories from either role. Prompt-context
     retrieval (`retrieve()`) passes `role="user"` explicitly instead.
     """
-    with get_pool().connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, content
-            FROM memories
-            WHERE user_id = %s AND content_tsv @@ websearch_to_tsquery('english', %s)
-                AND (%s::text IS NULL OR role = %s)
-            ORDER BY ts_rank_cd(content_tsv, websearch_to_tsquery('english', %s)) DESC
-            LIMIT %s
-            """,
-            (user_id, query, role, role, query, limit),
-        ).fetchall()
+    all_terms = func.plainto_tsquery(literal_column("'english'"), query)
+    ts_query = cast(func.replace(cast(all_terms, Text), " & ", " | "), TSQUERY)
 
-    return rows
+    statement = select(Memory.id, Memory.content).where(
+        Memory.user_id == uuid.UUID(user_id),
+        Memory.content_tsv.op("@@")(ts_query),
+    )
+    if role is not None:
+        statement = statement.where(Memory.role == role)
+    statement = statement.order_by(func.ts_rank_cd(Memory.content_tsv, ts_query).desc()).limit(limit)
+
+    with session_scope() as db:
+        return [dict(row) for row in db.execute(statement).mappings()]
 
 
 def search_dense(user_id: str, query: str, limit: int = 10, role: str | None = None) -> list[dict]:
     """L2 -- semantic matches, ranked by cosine distance (closest first).
 
-    `<=>` is pgvector's cosine-distance operator (0 = identical direction),
+    `cosine_distance` compiles to pgvector's `<=>` operator (0 = identical direction),
     paired with the `vector_cosine_ops` the HNSW index was built with. Finds
     paraphrases the lexical search would miss, but can dilute an exact rare
     term (a drug name) across 384 dimensions of otherwise-similar text.
@@ -129,18 +104,10 @@ def search_dense(user_id: str, query: str, limit: int = 10, role: str | None = N
     `role` is optional and unfiltered by default -- see search_lexical's
     docstring for why.
     """
-    query_embedding = _vector_literal(embed(query))
+    statement = select(Memory.id, Memory.content).where(Memory.user_id == uuid.UUID(user_id))
+    if role is not None:
+        statement = statement.where(Memory.role == role)
+    statement = statement.order_by(Memory.embedding.cosine_distance(embed(query))).limit(limit)
 
-    with get_pool().connection() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, content
-            FROM memories
-            WHERE user_id = %s AND (%s::text IS NULL OR role = %s)
-            ORDER BY embedding <=> %s::vector
-            LIMIT %s
-            """,
-            (user_id, role, role, query_embedding, limit),
-        ).fetchall()
-
-    return rows
+    with session_scope() as db:
+        return [dict(row) for row in db.execute(statement).mappings()]

@@ -5,7 +5,7 @@ retrieve() that retrieve_memories (app/orchestration/nodes/memory_hook.py) calls
 data already in Postgres from a previous chat or test_true_memory run.
 
 Run (from the "backend" directory):
-    uv run python -m scripts.query <user_id> "<your query>"
+    uv run python -m scripts.query <user_id> "<your query>"   (user_id is a users.id UUID)
 
 Defaults to role="user" (matching production prompt-context retrieval) and
 limit=5. Pass --all-roles to also see stored assistant replies.

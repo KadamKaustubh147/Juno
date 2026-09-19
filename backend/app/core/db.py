@@ -1,8 +1,8 @@
-"""Shared psycopg connection pool for the LangGraph checkpointer and the `messages` archive.
+"""psycopg connection pool for the LangGraph checkpointer only.
 
-Moved as-is from the old ai/chatbot.py -- same conninfo, pool size and row factory.
-There's no SQLAlchemy engine: the memory layer keeps its own separate pool in
-app/memory/semantic/vector_store.py.
+PostgresSaver needs a raw psycopg pool (dict rows, autocommit) and can't run on a
+SQLAlchemy engine, so it keeps its own pool on the same DATABASE_URL. Everything
+else goes through the SQLAlchemy engine in app/db/session.py.
 """
 
 from psycopg.rows import dict_row

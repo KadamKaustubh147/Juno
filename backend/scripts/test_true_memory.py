@@ -15,8 +15,7 @@ this user, for both roles, so you can see what the gate really did rather than
 compare against a scripted expectation for the assistant side.
 
 Requires:
-- Postgres running (docker compose up -d) with the `memories` table already
-  created (see Helpful notes/postgres/)
+- The database migrated (`uv run alembic upgrade head`) and reachable via DATABASE_URL
 - AICREDITS_API_KEY set -- this makes one real LLM API call per message
 
 Run (from the "backend" directory):
@@ -31,12 +30,19 @@ query's fused hits as a ranked table, since that's the part worth showing
 someone who wants to see True Memory actually working end to end.
 """
 
-from app.orchestration.graph import graph
+import uuid
+
+from sqlalchemy import delete, select
+
+from app.db.session import session_scope
 from app.memory.retriever import retrieve
-from app.memory.semantic.vector_store import get_pool
+from app.memory.semantic.models import Memory
+from app.orchestration.graph import graph
+from scripts.seed_dev_user import ensure_user
 
 # Throwaway ids, distinct from anything real, so this is safe to re-run.
-TEST_USER_ID = "test-student-mock-1"
+# memories.user_id is a foreign key to users, so the test user is a real (throwaway) row.
+TEST_USER_ID = "00000000-0000-4000-8000-0000000000aa"
 TEST_THREAD_ID = "test-student-mock-thread-1"
 
 # Three fake sessions with a burnt-out college student, grouped so the printed
@@ -118,9 +124,10 @@ def _blockquote(text: str) -> str:
 
 
 def reset_test_data():
-    """Delete any memories left over from a previous run of this script."""
-    with get_pool().connection() as conn:
-        conn.execute("DELETE FROM memories WHERE user_id = %s", (TEST_USER_ID,))
+    """Make sure the throwaway user exists, and delete memories left over from a previous run."""
+    with session_scope() as db:
+        ensure_user(db, uuid.UUID(TEST_USER_ID), "test-student-mock@juno.local", "Mock Student")
+        db.execute(delete(Memory).where(Memory.user_id == uuid.UUID(TEST_USER_ID)))
 
 
 def send_turn(text: str) -> str:
@@ -136,11 +143,12 @@ def send_turn(text: str) -> str:
 
 def print_stored_memories() -> None:
     """Show what actually ended up in `memories` for this user, both roles, as a table."""
-    with get_pool().connection() as conn:
-        rows = conn.execute(
-            "SELECT role, content, score FROM memories WHERE user_id = %s ORDER BY created_at",
-            (TEST_USER_ID,),
-        ).fetchall()
+    with session_scope() as db:
+        rows = db.execute(
+            select(Memory.role, Memory.content, Memory.score)
+            .where(Memory.user_id == uuid.UUID(TEST_USER_ID))
+            .order_by(Memory.created_at)
+        ).mappings().all()
 
     if not rows:
         print("_(nothing stored)_\n")

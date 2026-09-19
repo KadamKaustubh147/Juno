@@ -18,7 +18,7 @@ const markdownComponents = {
 }
 
 // ponytail: single local user until auth exists
-const USER_ID = 'kaustubh'
+const USER_ID = '00000000-0000-4000-8000-000000000001' // the seeded dev user (backend/scripts/seed_dev_user.py)
 
 function App() {
   const [messages, setMessages] = useState<ChatMsg[]>([])

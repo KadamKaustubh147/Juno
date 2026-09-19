@@ -9,6 +9,7 @@ Then POST to http://localhost:8000/chat
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.core.exceptions import register_exception_handlers
 from app.features.chat.router import router as chat_router
 from app.features.sessions.router import router as sessions_router
 
@@ -24,6 +25,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+register_exception_handlers(app)
 
 app.include_router(chat_router)
 app.include_router(sessions_router)

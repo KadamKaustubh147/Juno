@@ -3,8 +3,8 @@
 Registered in the graph under the name "chatbot" (see graph_builder.py) -- the chat
 service filters the token stream on that node name, so it must not change.
 
-The system message is built from the prompt files (persona + the current script section)
-plus this turn's memory_context and running summary.
+The system message is rendered from the Jinja2 prompt templates (persona + the current script
+section, plus this turn's memory_context and running summary when there are any).
 
 Short-term memory: every turn, only a token-capped window of the raw history is
 sent to the model (`trim_messages`) -- a safety net against context-window overflows.
@@ -21,13 +21,6 @@ from app.orchestration.state import State
 # tokens; this is just a guard-rail against a handful of oversized messages, not a lever
 # you'll feel day to day since `summarize` keeps the raw history short anyway.
 MAX_TOKENS = 8000
-
-# Appended (not templated) only on the turn a section change actually happened.
-NEW_SECTION_NOTE = (
-    "You have just entered this part of the conversation. Open it naturally: acknowledge what the "
-    "patient just said, then lead into the first thing you need to do here."
-)
-
 
 def _entered_new_section(state: State) -> bool:
     """True if select_next_section moved to a different section on this turn.
@@ -46,22 +39,27 @@ def generate_response(state: State):
     section = state.get("current_section") or FIRST_SECTION
     messages = state["messages"]
 
-    system_parts = [
-        render_prompt("system_prompt.txt"),
-        render_prompt("response_prompt.txt", section_name=section, section_text=section_text(section)),
-    ]
-    if _entered_new_section(state):
-        system_parts.append(NEW_SECTION_NOTE)
+    # The persona, then the current section's instructions. The optional parts of the second one --
+    # the "you have just entered this part" note, memories, summary -- are {% if %} blocks in its
+    # template, so they're passed empty (never omitted) when they don't apply. Memories come before
+    # the summary: memories are patient-specific facts (retrieved fresh every turn, so they matter
+    # regardless of how the chat has drifted); the summary is this conversation's own recent thread.
+    system_prompt = "\n\n".join(
+        part.strip()
+        for part in (
+            render_prompt("system_prompt.j2"),
+            render_prompt(
+                "response_prompt.j2",
+                section_name=section,
+                section_text=section_text(section),
+                entered_new_section=_entered_new_section(state),
+                memory_context=memory_context,
+                summary=summary,
+            ),
+        )
+    )
 
-    # Memories before summary -- memories are patient-specific facts (retrieved fresh every
-    # turn, so they matter regardless of how the chat has drifted); the summary is this
-    # conversation's own recent thread. Both are optional independently.
-    if memory_context:
-        system_parts.append(f"Relevant things you remember about this patient:\n{memory_context}")
-    if summary:
-        system_parts.append(f"Summary of the conversation so far:\n{summary}")
-
-    messages = [SystemMessage(content="\n\n".join(system_parts))] + messages
+    messages = [SystemMessage(content=system_prompt)] + messages
 
     # Cap what's actually sent to the LLM this turn -- doesn't touch persisted state.
     trimmed = trim_messages(

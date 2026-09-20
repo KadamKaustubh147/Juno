@@ -41,10 +41,10 @@ def assess_completion(state: State) -> dict:
         return result
 
     prompt = render_prompt(
-        "assessment_prompt.txt",
+        "assessment_prompt.j2",
         section_name=section,
         section_text=section_text(section),
-        summary=state.get("summary") or "(none yet)",
+        summary=state.get("summary", ""),  # the template shows "(none yet)" when empty
         transcript=format_transcript(state["messages"]),
     )
 

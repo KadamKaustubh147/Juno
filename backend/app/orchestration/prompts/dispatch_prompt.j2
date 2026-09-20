@@ -1,12 +1,14 @@
-You are directing a scripted therapy session between an AI therapist and a patient. The therapist has just finished $section_name, and you must choose which section comes next.
+You are directing a scripted therapy session between an AI therapist and a patient. The therapist has just finished {{ section_name }}, and you must choose which section comes next.
 
 The finished section, including its instructions for what happens next:
-$section_text
+{{ section_text }}
 The allowed next sections are:
-$options
+{% for name in options %}
+- {{ name }}
+{% endfor %}
 
 The conversation, oldest first. The last line is the patient's newest message:
-$transcript
+{{ transcript }}
 
 Choose exactly ONE of the allowed sections, following the transition instructions in the finished section (for example, act on the choice the patient made). Base your choice on what the patient actually said. Spell the section name exactly as listed above.
 

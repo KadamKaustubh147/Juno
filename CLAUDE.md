@@ -22,13 +22,14 @@ shared build tooling between them. Treat them as separate projects and `cd` into
 cd backend
 uv sync                                    # installs deps (requires Python 3.12, see .python-version)
 uv run alembic upgrade head                # creates the schema (and the pgvector extension)
-uv run python -m scripts.seed_dev_user     # interim dev user -- there is no auth yet
+uv run python -m scripts.seed_dev_user     # optional: the dev user the CLI/memory scripts use (it can't log in)
 ```
 
 Requires a `.env` with:
 ```
 AICREDITS_API_KEY=...
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require
+JWT_SECRET=...   # signs access tokens; only the server needs it (core/auth/jwt.py refuses to import without it)
 ```
 
 The database is a managed Postgres (Aiven) that only needs the `pgvector` extension; there is
@@ -160,8 +161,9 @@ turn after the first now pays one non-streamed assessor LLM call *before* the re
 **Ending a session**: `session_done` is sticky — once the terminal section completes, every later
 turn skips the LLM, routes to `END`, and produces no reply (no `chatbot` chunks, nothing for
 `ingest_memory`/`summarize` to run on). `retrieve_memories` still runs first on those turns. The chat
-service (`features/chat/service.py`) hasn't been taught about this: it just streams nothing and
-archives nothing, and the frontend isn't told the session ended.
+service reads `session_done` back from the checkpoint after every turn, marks the session `completed`
+(`ended_at`), and reports it in the `done` event; a finished session's turns stream `start` then `done`
+with `message_id: null` and archive no reply.
 
 **Prompts and LLM helpers** (`prompts/*.txt`, `llm_client.py`):
 - `prompts/` holds plain-text prompts — `system_prompt`, `response_prompt`, `assessment_prompt`,
@@ -198,10 +200,13 @@ can't run on SQLAlchemy. Together they can hold ~30 connections — mind the man
 **Schema**: `users`, `refresh_tokens` (`features/auth/models.py`), `therapy_sessions`, `messages`,
 `section_transitions` (`features/sessions/models.py`), `memories` (`memory/episodic/models.py`).
 All ids are UUIDs. `therapy_sessions.script_id`/`current_section` are NOT NULL but no scripts
-feature exists, so `ensure_session` fills them from `app/shared/constants.py` (`"cbt_intro_v1"` /
-`"intro"`) when a thread's first message creates the row. Those stand-ins are not the graph's
-sections: the real `current_section` (`"Section 1"`..`"Section 8"`) and `transitions` live only in the
-LangGraph checkpoint — nothing writes them back to `therapy_sessions` or `section_transitions` yet.
+feature exists, so `POST /sessions` (`sessions.service.create_session`) sets `script_id` to
+`DEFAULT_SCRIPT_ID` (`app/shared/constants.py`, `"cbt_intro_v1"`) and `current_section` to `FIRST_SECTION`.
+The LangGraph checkpoint stays the source of truth for the section and `transitions`; after every chat turn
+`chat.service._settle` copies them onto the row via `sessions.service.record_progress` (`current_section`,
+new `section_transitions` rows — the checkpoint's list only grows, so it inserts the tail past the rows
+already there — and `status`/`ended_at` when the session finishes). `refresh_tokens` exists as a model but
+nothing uses it: there are no refresh tokens.
 
 **Long-term memory** (`app/memory/episodic/`): all of it is code ported from a separate "TrueMemory"
 project, which is an episodic memory (it stores what was said, per user). It lives flat in
@@ -233,23 +238,42 @@ project, which is an episodic memory (it stores what was said, per user). It liv
 - `writer.py` — thin re-export of `evaluate`/`insert_memory`; the actual decide-and-store loop is
   still the `ingest_memory` node.
 
-**API** (`app/main.py`, routers in `app/features/*/router.py`). `user_id`, `thread_id`, and message
-ids are all UUIDs; bad ones get a 422. Not-found/forbidden errors are `AppError`s
-(`app/core/exceptions.py`) mapped to 404/403.
+**API** (`app/main.py`, routers in `app/features/*/router.py`). `thread_id`, session and message
+ids are UUIDs; bad ones get a 422. Not-found/auth errors are `AppError`s (`app/core/exceptions.py`)
+mapped to 401/404/409. Every route except `/auth/*` and `/health` requires `Authorization: Bearer <jwt>`
+(`CurrentUserId` in `app/core/security.py`); nothing takes a `user_id` from the client. Someone else's
+session is a 404, indistinguishable from a missing one.
 
-- `POST /chat` — validates the user and creates the session if new, archives the user's message
-  (all before streaming starts, so failures are real HTTP errors), then streams the assistant's
-  reply as plain text (`stream_mode="messages"`, filtered to chunks from the `"chatbot"` node so
-  `summarize`'s internal LLM call never leaks to the client) and archives the assembled reply
-  verbatim (an empty reply — a finished session — is not archived). `thread_id` (client-generated) becomes `therapy_sessions.id`. The `messages` table is
-  scrollback only, never read back by the graph — distinct from the LangGraph checkpoint.
-- `GET /sessions` — a user's threads, most recently active first.
-- `GET /messages` — cursor-paginated scrollback (`before` = the id of the oldest message the client
-  has; ordered by `(created_at, id)`, newest page first, reversed to chronological order).
+- `POST /auth/register`, `POST /auth/login` — `{access_token, token_type, user}`. Passwords are argon2
+  (`core/auth/password.py`); emails are stored lowercased; login doesn't format-validate the email (the
+  seeded `dev@juno.local` fails `EmailStr`). The JWT is HS256 with `sub` = user id and **no `exp`**:
+  tokens never expire and there are no refresh tokens. `get_current_user_id` re-checks `users.is_active`
+  on every request, which is the kill switch (the other is rotating `JWT_SECRET`). It uses its own short
+  `session_scope()` rather than `get_db`, so a streaming `/chat` doesn't hold a pooled connection open.
+- `GET`/`PATCH /users/me`.
+- `POST /sessions` (server-side creation, returns the `id` to chat to), `GET /sessions` (`?limit=`, includes
+  sessions with no messages yet), `GET /sessions/{id}`, `DELETE /sessions/{id}` (row + cascaded messages, then
+  `checkpointer.delete_thread`), `GET /sessions/{id}/messages` (cursor-paginated scrollback: `before` = the id
+  of the oldest message the client has; ordered by `(created_at, id)`, newest page first, reversed to
+  chronological order; `has_more` is exact).
+- `POST /chat` `{thread_id, message}` — checks ownership and archives the user's message (all before
+  streaming starts, so failures are real HTTP errors), then streams **Server-Sent Events** (see the
+  docstring of `features/chat/service.py` for the event list: `start`, `section`, `token`, `done`,
+  `error`). It runs `graph.stream(..., stream_mode=["messages", "updates"])`: `messages` items filtered to
+  the `"chatbot"` node become `token` events (so the assessor's, dispatcher's and `summarize`'s LLM output
+  never leaks); `updates` items carrying a `transitions` entry become `section` events. Afterwards
+  `_settle` reads the checkpoint (`graph.get_state`), saves the reply and the session's progress in one
+  transaction, and sends `done`. The same `_settle` runs from `finally` when the client disconnects or the
+  graph crashes, so the partial reply is archived (an empty reply is not). A mid-stream failure is an
+  `error` event with a generic message, not an HTTP error. The `messages` table is scrollback only, never
+  read back by the graph — distinct from the LangGraph checkpoint. Mutating routes call `db.commit()`
+  before returning because `get_db`'s own commit only runs after the response has been sent.
 - `GET /health`.
 
-There's no auth: the frontend sends a hard-coded `USER_ID`, which must be the seeded dev user
-(`scripts/seed_dev_user.py`, fixed UUID `00000000-0000-4000-8000-000000000001`).
+`tests/unit/api/` covers all of it on in-memory SQLite (`conftest.py` stubs `app.orchestration.graph` and
+`.checkpointer` in `sys.modules`, since those connect to Postgres at import) with a fake graph, plus
+`test_chat_real_graph.py` running the real graph on `MemorySaver` to pin the stream shapes the service
+depends on.
 
 ## Frontend (`frontend/`)
 
@@ -265,8 +289,29 @@ pnpm lint       # eslint .
 pnpm preview
 ```
 
-`src/api.ts` is the entire API client: `fetchSessions`, `fetchMessages` (scrollback) and
-`streamChat` (POSTs to `/chat`, reads the streamed body via a `ReadableStream` reader,
-token-by-token callback). Points at `VITE_API_URL` env var, default `http://localhost:8000`.
-`ChatMsg.id` is typed `number` but the server now returns UUID strings (optimistic local messages
-use numeric ids), so it works at runtime with a stale type.
+**Screens.** There is no router: `src/Root.tsx` picks one of three screens from two pieces of state
+(signed in? which auth screen is open?). Signed out shows `pages/LandingPage.tsx`; its buttons open
+`AuthScreen.tsx` in login or register mode; signed in shows `pages/ChatPage.tsx`. Logout drops back to
+the landing page. A restored session renders straight from the stored token, without waiting for the
+server -- only a 401 (see below) signs the user out, so a network error or an unreachable backend doesn't.
+
+**API client.** `src/api.ts` is the entire client and the only file that knows the backend contract: auth
+(`login`, `register`, `fetchMe`), sessions (`createSession`, `fetchSessions`, `fetchMessages`) and
+`streamChat`, which POSTs `/chat` and parses the Server-Sent Events itself (`EventSource` can't POST or
+send headers) into `onStart`/`onToken`/`onDone`/`onError` callbacks. The bearer token lives in
+localStorage (`juno_token`); nothing sends a user id, the server reads it from the token. A 401 on a
+request that carried a token clears it and calls the handler `Root` registers with
+`setUnauthorizedHandler`, which shows the login screen. Base URL is `VITE_API_URL`, default
+`http://localhost:8000`.
+
+**Layout** (`src/`): `components/` (shared `Button`, `Logo`), `pages/` (one per screen, they only compose),
+`features/chat/` (`hooks/useChat.ts` -- messages, scrollback paging, the streamed reply, sessions created
+lazily on the first send; `hooks/useSessions.ts`; `components/` for sidebar, header, message list,
+bubble, composer) and `features/auth/useMe.ts`. The open session lives in `?thread=<id>` so a refresh
+restores it. Optimistic messages carry a temporary `local-…` id until `onStart`/`onDone` report the real
+ones; `useChat` never sends a `local-` id as a scrollback cursor. When a turn's `done` reports
+`session_done`, or a session opens with `status: "completed"`, the composer is replaced by a notice.
+
+**Palette and type.** The colors are the tokens in `src/index.css` (`cream`, `sage`, `ink`, `muted`,
+`line`); use them rather than adding new colors. `font-serif` is Fraunces (Google Fonts link in
+`index.html`), used for headlines and the assistant's messages.

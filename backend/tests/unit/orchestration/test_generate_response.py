@@ -1,8 +1,11 @@
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
 from app.orchestration.nodes import generate_response as module
-from app.orchestration.nodes.generate_response import NEW_SECTION_NOTE, generate_response
+from app.orchestration.nodes.generate_response import generate_response
 from tests.unit.orchestration.fakes import FakeLLM
+
+# the "just entered this part" note, which lives in prompts/response_prompt.j2
+NEW_SECTION_NOTE = "You have just entered this part of the conversation"
 
 MESSAGES = [HumanMessage(content="Hello"), AIMessage(content="Hi!"), HumanMessage(content="I'm Sam.")]
 

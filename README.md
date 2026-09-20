@@ -29,14 +29,16 @@ Create `.env`:
 ```
 AICREDITS_API_KEY=your_key_here
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require
+JWT_SECRET=<long random string>   # e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`
 ```
 
-Install deps, create the schema, and seed the interim dev user (there's no auth yet):
+Install deps and create the schema (users register through the app; `seed_dev_user` is only
+needed for `scripts/chat_cli.py` and the memory scripts, which use the fixed dev user):
 
 ```sh
 uv sync
 uv run alembic upgrade head              # creates the tables and the pgvector extension
-uv run python -m scripts.seed_dev_user   # the frontend's USER_ID is this user's fixed UUID
+uv run python -m scripts.seed_dev_user   # optional: the dev user the CLI scripts talk as
 ```
 
 The database must be reachable when the app starts -- it opens its connections at import

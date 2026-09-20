@@ -44,10 +44,10 @@ def select_next_section(state: State) -> dict:
 def _dispatch(state: State, current: str, allowed: list[str]) -> tuple[str, str]:
     """Ask the model which of `allowed` to go to; (choice, reasoning). Stays in `current` if it can't answer validly."""
     prompt = render_prompt(
-        "dispatch_prompt.txt",
+        "dispatch_prompt.j2",
         section_name=current,
         section_text=section_text(current),
-        options="\n".join(f"- {name}" for name in allowed),
+        options=allowed,
         transcript=format_transcript(state["messages"]),
     )
 

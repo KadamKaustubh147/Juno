@@ -79,7 +79,7 @@ def test_walk_through_the_script_to_the_end(session):
     assert values["current_section"] == "Section 2"
     assert dispatcher.prompts == []
     assert "Task 2a:" in system_prompt(chatbot, 2)
-    assert generate_response.NEW_SECTION_NOTE in system_prompt(chatbot, 2)
+    assert "You have just entered this part of the conversation" in system_prompt(chatbot, 2)
 
     # Turn 4: Section 2 branches; the dispatcher picks Section 4.
     values = say(graph, "I'd like to learn a CBT exercise right away.")

@@ -1,10 +1,11 @@
-"""Create the interim dev user (there's no auth/registration yet).
+"""Create the dev user the CLI/memory scripts talk as (scripts/chat_cli.py, test_true_memory.py).
 
 Run (from the "backend" directory, after `alembic upgrade head`):
     uv run python -m scripts.seed_dev_user
 
-The frontend's USER_ID (frontend/src/App.tsx) is this fixed UUID. hashed_password is '!',
-which is not a valid hash, so nobody can log in as this user -- real auth replaces this.
+hashed_password is '!', which is not a valid hash, so nobody can log in as this user. Real users
+sign up through POST /auth/register; this one only exists so the scripts have a user id for the
+memory layer.
 """
 
 import uuid

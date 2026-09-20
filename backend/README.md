@@ -4,16 +4,20 @@
 backend/
 ├── app/
 │   ├── main.py            # FastAPI app: CORS, router wiring, /health
-│   ├── config.py          # env settings (DATABASE_URL, AICREDITS_API_KEY)
-│   ├── core/db.py         # psycopg pool for the LangGraph checkpointer only
+│   ├── config.py          # env settings (DATABASE_URL, AICREDITS_API_KEY, JWT_SECRET)
+│   ├── core/              # auth/ (jwt, password hashing), security.py (bearer-token dependency),
+│   │                      #   exceptions.py, db.py (psycopg pool for the LangGraph checkpointer only)
 │   ├── db/                # SQLAlchemy Base/mixins, engine + session, Alembic migrations/
 │   ├── features/
-│   │   ├── chat/          # POST /chat (streams the graph's reply)
-│   │   └── sessions/      # GET /sessions, GET /messages + the `messages` archive
+│   │   ├── auth/          # POST /auth/register, /auth/login
+│   │   ├── users/         # GET/PATCH /users/me
+│   │   ├── sessions/      # POST/GET/DELETE /sessions..., GET /sessions/{id}/messages + the `messages` archive
+│   │   └── chat/          # POST /chat (streams the graph's reply as Server-Sent Events)
 │   ├── orchestration/     # LangGraph: graph_builder (structure), graph (+ Postgres checkpointer), state,
 │   │                      #   nodes/, edges, llm_client, script.json + script_loader, prompts/*.txt
 │   └── memory/            # long-term memory (episodic/: encoding gate, retrieval, pgvector store)
 ├── tests/unit/orchestration/  # pytest suite for the scripted-session flow (no DB, no network)
+├── tests/unit/api/            # HTTP API tests (in-memory SQLite, fake/real-on-MemorySaver graph)
 ├── scripts/               # seed/CLI/inspection scripts (not app code)
 └── alembic.ini            # migrations config (DB URL comes from DATABASE_URL)
 ```
@@ -21,7 +25,8 @@ backend/
 Each feature keeps its SQLAlchemy models in its own `models.py` (`features/users`,
 `features/auth`, `features/sessions`); the `memories` model is `app/memory/episodic/models.py`.
 
-(`auth/` and `users/` have models only so far; their routers/services, `features/scripts/`, `memory/graph/` etc. are empty placeholders.)
+(`features/scripts/`, `memory/graph/` etc. are empty placeholders. `features/auth` still carries the `RefreshToken`
+model and `core/auth/refresh_tokens.py` is a placeholder: there are no refresh tokens, access tokens never expire.)
 
 ## Setup
 
@@ -30,6 +35,7 @@ Each feature keeps its SQLAlchemy models in its own `models.py` (`features/users
 ```
 AICREDITS_API_KEY=...
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require   # e.g. Aiven Postgres
+JWT_SECRET=...                                                              # signs access tokens; keep it long and random
 ```
 
 `postgres://` and `postgresql://` URIs both work: SQLAlchemy is pointed at the psycopg3
@@ -39,7 +45,7 @@ migration.
 ```sh
 uv sync
 uv run alembic upgrade head                 # creates the schema
-uv run python -m scripts.seed_dev_user      # interim dev user (no auth yet)
+uv run python -m scripts.seed_dev_user      # optional: the dev user the CLI/memory scripts use
 ```
 
 Migrations: `uv run alembic revision --autogenerate -m "..."` after changing a model,
@@ -125,20 +131,59 @@ uv run uvicorn app.main:app --reload
 # or: ./runserver.sh
 ```
 
-Then (the dev user must be seeded, and `thread_id` is any new UUID -- it becomes the
-session id on the first message):
+Then register, start a session, and chat (`-N` keeps curl from buffering the stream):
 
 ```sh
-curl -N -X POST http://localhost:8000/chat \
-  -H "Content-Type: application/json" \
-  -d '{"user_id": "00000000-0000-4000-8000-000000000001", "message": "hi", "thread_id": "'"$(uuidgen)"'"}'
+BASE=http://localhost:8000
+TOKEN=$(curl -s -X POST $BASE/auth/register -H "Content-Type: application/json" \
+  -d '{"email": "you@example.com", "password": "at least 8 chars"}' | jq -r .access_token)
+SESSION=$(curl -s -X POST $BASE/sessions -H "Authorization: Bearer $TOKEN" | jq -r .id)
+curl -N -X POST $BASE/chat -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"thread_id": "'"$SESSION"'", "message": "hi"}'
 ```
+
+### Endpoints
+
+Everything except `/auth/*` and `/health` needs `Authorization: Bearer <token>`. Tokens never expire
+(no refresh tokens); deactivate the user (`users.is_active`) or rotate `JWT_SECRET` to cut one off.
+
+| Method + path | |
+|---|---|
+| `POST /auth/register` | `{email, password (8+), full_name?}` -> `{access_token, token_type, user}` |
+| `POST /auth/login` | `{email, password}` -> same shape |
+| `GET /users/me`, `PATCH /users/me` | profile; PATCH takes `{full_name}` |
+| `POST /sessions` | start a session at Section 1 -> `{id, status, current_section, ...}` |
+| `GET /sessions` | your sessions, most recently active first (`?limit=`) |
+| `GET /sessions/{id}` | one session: status, current section, `ended_at`, `last_at` |
+| `GET /sessions/{id}/messages` | scrollback, newest page first (`?before=<message id>&limit=`) |
+| `DELETE /sessions/{id}` | delete the session, its messages and its saved graph state |
+| `POST /chat` | `{thread_id, message}` -> the reply as Server-Sent Events |
+| `GET /health` | |
+
+Someone else's session id answers 404, same as one that doesn't exist.
+
+### Streaming (`POST /chat`)
+
+The response is `text/event-stream`; each event is `event: <name>` + one line of `data: <json>`:
+
+| event | data | |
+|---|---|---|
+| `start` | `{user_message_id}` | your message is saved; the reply is on its way |
+| `section` | `{from, to}` | the session moved to a new script section |
+| `token` | `{text}` | a chunk of the reply (zero or more) |
+| `done` | `{message_id, current_section, session_done}` | reply complete and saved; `message_id` is null if there was no reply |
+| `error` | `{detail}` | the turn failed after streaming began |
+
+Errors before streaming starts (401, 404, 422) are ordinary JSON responses. `EventSource` can't POST or send
+an `Authorization` header, so clients read the body with `fetch` and parse the frames themselves
+(`frontend/src/api.ts`). If the client disconnects, whatever reply text was sent is still archived.
 
 ## Tests
 
-The scripted-session flow has a pytest suite in `tests/unit/orchestration/`. It needs no database
-and no network -- every LLM is replaced by a fake, and any test that forgets to install one fails
-instead of calling the real model:
+The scripted-session flow has a pytest suite in `tests/unit/orchestration/`, and the HTTP API has one in
+`tests/unit/api/` (in-memory SQLite, plus the real graph on `MemorySaver`). Neither needs a database or
+network -- every LLM is replaced by a fake, and any test that forgets to install one fails instead of
+calling the real model:
 
 ```sh
 uv run pytest tests

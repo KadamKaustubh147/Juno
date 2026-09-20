@@ -12,8 +12,16 @@ class AppError(Exception):
         self.detail = detail
 
 
+class UnauthorizedError(AppError):
+    status_code = 401
+
+
 class NotFoundError(AppError):
     status_code = 404
+
+
+class ConflictError(AppError):
+    status_code = 409
 
 
 class ForbiddenError(AppError):
@@ -23,4 +31,7 @@ class ForbiddenError(AppError):
 def register_exception_handlers(app: FastAPI) -> None:
     @app.exception_handler(AppError)
     def handle_app_error(request: Request, exc: AppError):
-        return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+        headers = {"WWW-Authenticate": "Bearer"} if exc.status_code == 401 else None
+        return JSONResponse(
+            status_code=exc.status_code, content={"detail": exc.detail}, headers=headers
+        )

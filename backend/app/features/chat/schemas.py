@@ -1,10 +1,9 @@
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    user_id: uuid.UUID
-    message: str
-    # thread_id is the chat id -- it becomes the therapy_sessions.id on the first message.
+    # The session to talk in: the `id` POST /sessions returned. The user comes from the token.
     thread_id: uuid.UUID
+    message: str = Field(min_length=1)

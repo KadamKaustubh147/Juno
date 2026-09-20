@@ -3,15 +3,18 @@
 Run with (from the "backend" directory):
     uvicorn app.main:app --reload
 
-Then POST to http://localhost:8000/chat
+Then POST /auth/register, POST /sessions, and POST /chat (the reply streams back as
+Server-Sent Events) -- or browse the interactive docs at http://localhost:8000/docs
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.exceptions import register_exception_handlers
+from app.features.auth.router import router as auth_router
 from app.features.chat.router import router as chat_router
 from app.features.sessions.router import router as sessions_router
+from app.features.users.router import router as users_router
 
 app = FastAPI(title="AI Therapist Chatbot")
 
@@ -28,8 +31,10 @@ app.add_middleware(
 
 register_exception_handlers(app)
 
-app.include_router(chat_router)
+app.include_router(auth_router)
+app.include_router(users_router)
 app.include_router(sessions_router)
+app.include_router(chat_router)
 
 
 @app.get("/health")

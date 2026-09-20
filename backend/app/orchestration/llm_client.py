@@ -5,10 +5,10 @@ structured-output helpers the script-driven nodes share."""
 import json
 import logging
 from pathlib import Path
-from string import Template
 from typing import TypeVar
 
 from langchain_core.messages import AIMessage, HumanMessage
+from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
@@ -44,15 +44,33 @@ judge_llm = ChatOpenAI(
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"
 
+# One shared environment (it caches the compiled templates). The settings matter:
+#   StrictUndefined   a variable the caller didn't pass raises UndefinedError instead of quietly
+#                     rendering blank into a prompt. Optional blocks take an explicit empty value.
+#   autoescape=False  these are plain-text prompts for an LLM, not HTML. Escaping would turn a
+#                     patient's "&" or "'" into "&amp;" / "&#39;" before the model sees it.
+#   trim_blocks / lstrip_blocks
+#                     a {% if %} / {% for %} tag on its own line leaves no blank line behind.
+#   keep_trailing_newline
+#                     don't drop the file's final newline.
+_prompts = Environment(
+    loader=FileSystemLoader(PROMPTS_DIR),
+    undefined=StrictUndefined,
+    autoescape=False,
+    trim_blocks=True,
+    lstrip_blocks=True,
+    keep_trailing_newline=True,
+)
 
-def render_prompt(name: str, /, **ctx: str) -> str:
-    """Read prompts/<name> and fill its `$placeholders` from `ctx`.
 
-    `substitute`, not `safe_substitute`: a placeholder with no value raises KeyError instead of
-    quietly rendering blank into a prompt. (Values are inserted as-is, never re-scanned, so a
-    patient message containing "$" can't break it -- only a literal "$" in the *file* needs "$$".)
+def render_prompt(name: str, /, **ctx: object) -> str:
+    """Render prompts/<name> (a Jinja2 template, extension included) with `ctx`.
+
+    Only files in prompts/ are ever loaded, by a name the code chooses. Values in `ctx` (a patient's
+    message, say) are inserted as-is and never parsed as template syntax, so a patient typing
+    "{{ ... }}" or "{% ... %}" just gets those characters in the prompt.
     """
-    return Template((PROMPTS_DIR / name).read_text(encoding="utf-8")).substitute(**ctx)
+    return _prompts.get_template(name).render(**ctx)
 
 
 def format_transcript(messages: list, limit: int | None = None) -> str:

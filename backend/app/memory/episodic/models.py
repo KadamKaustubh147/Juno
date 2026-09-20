@@ -7,7 +7,7 @@ from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, CreatedAtMixin, UUIDPrimaryKeyMixin
 
-# Must match app/memory/semantic/embeddings.py's EMBEDDING_DIM -- swapping the model
+# Must match app/memory/episodic/embeddings.py's EMBEDDING_DIM -- swapping the model
 # means a migration.
 EMBEDDING_DIM = 384
 

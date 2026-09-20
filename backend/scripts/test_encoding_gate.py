@@ -9,7 +9,7 @@ Run (from the "backend" directory):
 The first run downloads the embedding model (~90MB), so it takes a minute.
 """
 
-from app.memory.encoding_gate import evaluate
+from app.memory.episodic.encoding_gate import evaluate
 
 # Pretend these are already stored for this patient.
 EXISTING_MEMORIES = [

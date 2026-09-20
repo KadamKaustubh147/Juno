@@ -8,9 +8,9 @@ the whole long-term-memory loop.
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
 
-from app.memory.encoding_gate import evaluate
-from app.memory.retriever import retrieve
-from app.memory.semantic.vector_store import insert_memory, search_dense
+from app.memory.episodic.encoding_gate import evaluate
+from app.memory.episodic.retriever import retrieve
+from app.memory.episodic.vector_store import insert_memory, search_dense
 from app.orchestration.state import State
 
 # How many memories to pull into context per turn, and how many nearby memories the

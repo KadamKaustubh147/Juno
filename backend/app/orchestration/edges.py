@@ -9,7 +9,16 @@ from app.orchestration.state import State
 # Kept below MAX_TOKENS (nodes/generate_response.py) so summarize has a chance to
 # compress content before trim_messages would otherwise start excluding it from the
 # very next turn's prompt.
+
 SUMMARIZE_AFTER_TOKENS = 6000
+
+def route_after_assessment(state: State) -> str:
+    """Where to go once assess_completion has ruled on the current section."""
+    if state.get("session_done"):
+        return END
+    if state.get("section_complete"):
+        return "select_next_section"
+    return "chatbot"
 
 
 def should_summarize(state: State) -> str:

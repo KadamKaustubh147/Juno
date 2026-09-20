@@ -43,9 +43,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from app.memory.markers import has_update_markers
-from app.memory.salience import NOISE_EXACT_SHORT, encoding_salience
-from app.memory.semantic.embeddings import embed_many
+from app.memory.episodic.embeddings import embed_many
+from app.memory.episodic.markers import has_update_markers
+from app.memory.episodic.salience import NOISE_EXACT_SHORT, encoding_salience
 
 # How much each signal counts. They don't sum to 1, so the weighted sum is
 # divided by their total to bring the final score back into [0, 1].

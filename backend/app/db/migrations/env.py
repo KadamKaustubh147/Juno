@@ -10,7 +10,7 @@ from app.db.base import Base
 import app.features.auth.models  # noqa: F401
 import app.features.sessions.models  # noqa: F401
 import app.features.users.models  # noqa: F401
-import app.memory.semantic.models  # noqa: F401
+import app.memory.episodic.models  # noqa: F401
 
 config = context.config
 

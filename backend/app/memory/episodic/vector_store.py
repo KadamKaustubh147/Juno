@@ -14,9 +14,9 @@ from sqlalchemy import Text, cast, func, literal_column, select
 from sqlalchemy.dialects.postgresql import TSQUERY
 
 from app.db.session import session_scope
-from app.memory.encoding_gate import EncodingDecision
-from app.memory.semantic.embeddings import embed
-from app.memory.semantic.models import Memory
+from app.memory.episodic.encoding_gate import EncodingDecision
+from app.memory.episodic.embeddings import embed
+from app.memory.episodic.models import Memory
 
 
 def insert_memory(user_id: str, role: str, content: str, decision: EncodingDecision) -> uuid.UUID:

@@ -13,7 +13,7 @@ limit=5. Pass --all-roles to also see stored assistant replies.
 
 import argparse
 
-from app.memory.retriever import retrieve
+from app.memory.episodic.retriever import retrieve
 
 
 def main() -> None:

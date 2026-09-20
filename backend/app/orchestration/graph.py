@@ -1,26 +1,15 @@
-"""The chat graph: START -> retrieve_memories -> chatbot -> ingest_memory -> (summarize) -> END.
+"""The chat graph, checkpointed to Postgres per `thread_id` so conversations survive restarts.
 
-Checkpointed to Postgres per `thread_id`, so conversations survive restarts.
+    START -> retrieve_memories -> assess_completion -> (session_done -> END
+                                                        | section_complete -> select_next_section -> chatbot
+                                                        | chatbot)
+    chatbot -> ingest_memory -> (summarize) -> END
+
+The structure lives in graph_builder.py; this module only attaches the Postgres checkpointer
+(which connects at import time -- import graph_builder instead if you don't want a database).
 """
 
-from langgraph.graph import END, START, StateGraph
-
 from app.orchestration.checkpointer import checkpointer
-from app.orchestration.edges import should_summarize
-from app.orchestration.nodes.generate_response import generate_response
-from app.orchestration.nodes.memory_hook import ingest_memory, retrieve_memories
-from app.orchestration.nodes.summarize import summarize
-from app.orchestration.state import State
+from app.orchestration.graph_builder import build_graph
 
-graph_builder = StateGraph(State)
-graph_builder.add_node("retrieve_memories", retrieve_memories)
-graph_builder.add_node("chatbot", generate_response)
-graph_builder.add_node("ingest_memory", ingest_memory)
-graph_builder.add_node("summarize", summarize)
-graph_builder.add_edge(START, "retrieve_memories")
-graph_builder.add_edge("retrieve_memories", "chatbot")
-graph_builder.add_edge("chatbot", "ingest_memory")
-graph_builder.add_conditional_edges("ingest_memory", should_summarize, {"summarize": "summarize", END: END})
-graph_builder.add_edge("summarize", END)
-
-graph = graph_builder.compile(checkpointer=checkpointer)
+graph = build_graph(checkpointer)

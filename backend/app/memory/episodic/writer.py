@@ -9,7 +9,7 @@ follow-up pass; this file just gives callers one place to import "the writer"
 pieces from in the meantime.
 """
 
-from app.memory.encoding_gate import evaluate
-from app.memory.semantic.vector_store import insert_memory
+from app.memory.episodic.encoding_gate import evaluate
+from app.memory.episodic.vector_store import insert_memory
 
 __all__ = ["evaluate", "insert_memory"]

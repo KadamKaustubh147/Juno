@@ -15,7 +15,7 @@ logic is plain Python rather than a stored procedure -- easy to unit-test with
 fabricated rankings, no database required.
 """
 
-from app.memory.semantic.vector_store import search_dense, search_lexical
+from app.memory.episodic.vector_store import search_dense, search_lexical
 
 RRF_K = 60
 

@@ -1,9 +1,9 @@
 # Juno
 
-An AI therapist chatbot: a LangGraph backend with Postgres-backed long-term memory
-("True Memory") in `backend/`, and a React chat client in `frontend/`. They talk
-over plain HTTP -- there's no shared build tooling between them, this is not a real
-Turborepo despite the folder layout.
+An AI therapist chatbot: a LangGraph backend in `backend/` -- it walks the patient through a
+scripted, eight-section CBT session and has Postgres-backed long-term memory ("True Memory")
+-- and a React chat client in `frontend/`. They talk over plain HTTP -- there's no shared build
+tooling between them, this is not a real Turborepo despite the folder layout.
 
 See `backend/README.md` for how the backend is structured, and
 `CLAUDE.md` for repo-wide notes aimed at coding agents.
@@ -66,6 +66,17 @@ blocked at the browser's preflight.
 Open `http://localhost:5173` and send a message. To confirm persistence: note the
 `?thread=<uuid>` the URL gets after your first message, then reload that exact URL --
 the conversation should restore from Postgres.
+
+The therapist follows the script in `backend/app/orchestration/script.json`, so expect it to open
+with a welcome and ask your name. Once the session reaches its closing section and you say goodbye,
+the thread is finished: later messages in it get no reply (see `backend/README.md`, "Scripted
+sessions"). Start a new thread to begin another session.
+
+## Tests
+
+```sh
+cd backend && uv run pytest tests    # scripted-session flow; no database or network needed
+```
 
 ## Optional: browse the database
 

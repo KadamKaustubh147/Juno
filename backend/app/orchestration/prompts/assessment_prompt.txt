@@ -1,0 +1,23 @@
+You are reviewing a scripted therapy session between an AI therapist and a patient. Decide whether the therapist has finished the CURRENT SECTION of the script, so the session can move on.
+
+CURRENT SECTION: $section_name
+
+The section's tasks, exactly as the therapist was instructed:
+$section_text
+Summary of the earlier conversation (may be empty):
+$summary
+
+The conversation, oldest first (anything older than this is covered by the summary above). The last line is the patient's newest message, which the therapist has not replied to yet:
+$transcript
+
+Decide whether ALL tasks in the section are now complete. A task is complete only if the conversation clearly shows it was carried out AND any condition attached to it has been met. Conditions to look for include:
+- the patient confirmed they understood, or confirmed the therapist's summary was correct;
+- the patient said they have no more questions;
+- the patient made the choice the task asks for;
+- the patient said goodbye (for a closing task).
+Treat the patient's newest message as evidence: it may be exactly what satisfies the last condition.
+
+Be conservative. If any task is unfinished, if a condition is unclear, or if the newest message raises a new question or topic, the section is NOT complete. When in doubt, answer false.
+
+Reply with ONLY a JSON object, no other text:
+{"reasoning": "<brief explanation of what is done and what, if anything, is missing>", "section_complete": true or false}

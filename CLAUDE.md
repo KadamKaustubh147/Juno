@@ -39,6 +39,8 @@ are read at import time, so `alembic` needs `AICREDITS_API_KEY` set too.
 The database must be reachable before the app starts: importing `app.core.db` opens a psycopg
 pool and `app/orchestration/checkpointer.py` calls `checkpointer.setup()` at import time, so
 even importing `app.main` (or `app.orchestration.graph`) fails without a live database.
+`app/orchestration/graph_builder.py` (`build_graph(checkpointer)`) has no such dependency, which is
+why the tests import it instead.
 
 Run the API server:
 ```sh
@@ -70,8 +72,23 @@ the revision. The LangGraph checkpoint tables (`checkpoints`, `checkpoint_*`) ar
 
 ### Tests
 
-No pytest suite — the `test_*.py` files under `scripts/` are runnable inspection scripts, not
-assertions:
+`tests/unit/orchestration/` is a pytest suite for the scripted-session flow: the script loader, prompt
+rendering, the structured-output helper, routing, both SBDPP nodes, the response node, and a full-graph
+walk (Section 1 → 2 → 4 → 5 → 8 → done) on `MemorySaver`. It needs no database and no network:
+`conftest.py` sets dummy env vars if there's no `.env`, and swaps every LLM in the node modules for one
+that raises, so a test can't spend credits by accident — tests install `FakeLLM`s (`fakes.py`) instead.
+pytest is a dev dependency (`[dependency-groups].dev`), installed by `uv sync`.
+
+```sh
+uv run pytest tests
+```
+
+Tests must import `app.orchestration.graph_builder`, never `graph.py` or `checkpointer.py` (Postgres at
+import time). With no `user_id` in the config, `retrieve_memories`/`ingest_memory` return early, so the
+real memory nodes can run in a test without touching the memory layer.
+
+The `test_*.py` files under `scripts/` are not part of that suite — they're runnable inspection
+scripts, not assertions:
 
 ```sh
 uv run python -m scripts.test_encoding_gate   # no DB needed; prints gate scores for sample messages
@@ -82,22 +99,51 @@ uv run python -m scripts.query <user_id> "<query>"   # ad-hoc retrieve() against
 ### Architecture
 
 Code lives in `backend/app/`; each feature keeps its own `router`/`schemas`/`service`/`models`.
-Many files in the target structure (`auth/`, `users/` routers and services, `features/scripts/`,
-`memory/graph/`, `memory/working_memory.py`, `orchestration/nodes/assess_completion.py` and
-`select_next_section.py`, the `.j2` prompts) are empty placeholders with only a docstring.
+Several files in the target structure (`auth/`, `users/` routers and services, `features/scripts/`,
+`memory/graph/`, `memory/working_memory.py`) are empty placeholders with only a docstring.
 
-**Chat graph** (`app/orchestration/graph.py`): a LangGraph `StateGraph` —
-`START → retrieve_memories → chatbot → ingest_memory → (summarize?) → END`, checkpointed to
-Postgres per `thread_id` via `PostgresSaver` so conversations survive restarts. State is in
-`state.py`, routing in `edges.py`, the LLM client in `llm_client.py`, the checkpointer in
-`checkpointer.py`.
+**Chat graph**: a LangGraph `StateGraph` that runs a scripted CBT session — Script-Based Dialog
+Policy Planning (SBDPP, arXiv:2412.15242). The structure is `build_graph(checkpointer)` in
+`graph_builder.py`; `graph.py` just attaches the Postgres `PostgresSaver` (per `thread_id`, so
+conversations survive restarts) and exports `graph`. State is in `state.py`, routing in `edges.py`,
+the LLM client and prompt/structured-output helpers in `llm_client.py`, the script in `script.json` +
+`script_loader.py`.
+
+```
+START → retrieve_memories → assess_completion ─┬─ session_done ─────→ END
+                                               ├─ section_complete → select_next_section → chatbot
+                                               └─ otherwise ───────→ chatbot
+chatbot → ingest_memory → (summarize?) → END
+```
+
+**The script** (`script.json`, loaded by `script_loader.load_script()`): "Section 1".."Section 8",
+each a dict of "Task 1a".. → instruction text. It is *not* strict JSON (raw newlines inside strings),
+so it's loaded with `strict=False` — don't "fix" or reformat the file. The script only states
+transitions as prose ("proceed with Section 5"), so `script_loader.TRANSITIONS` encodes them as data
+(1→2; 2→3|4; 3→4; 4→5|6|7; 5,6,7→8; 8 is terminal). A test compares the table to the prose, and
+`load_script()` validates it against the script's keys. `FIRST_SECTION` is `"Section 1"`.
 
 - `retrieve_memories` (`nodes/memory_hook.py`) — pulls this user's relevant long-term memories
-  into `memory_context` before the LLM call.
+  into `memory_context` before the LLM call. Runs before `assess_completion`; the SBDPP nodes never
+  call the memory layer themselves.
+- `assess_completion` (`nodes/assess_completion.py`) — every turn: an LLM judges (conservatively)
+  whether *all* tasks of `current_section` are done, including conditions like "patient confirmed" or
+  "no more questions". It re-derives `section_complete`/`session_done`/`thought` from scratch each
+  turn; only `current_section` (and `session_done`, see below) carries over from the checkpoint.
+  No therapist reply yet (first turn) → no LLM call, stay in Section 1. An unparseable verdict is
+  treated as "not complete". Completing a section with no successor (Section 8) sets `session_done`.
+- `select_next_section` (`nodes/select_next_section.py`) — one allowed successor → take it, no LLM.
+  Otherwise (Sections 2 and 4) a dispatcher LLM picks; the answer is validated against
+  `TRANSITIONS[current]`, retried once with a correction, then it stays in the current section and
+  says so in the reasoning. Appends a `{"from","to","reasoning"}` entry to `transitions`.
 - `chatbot` (`nodes/generate_response.py`, registered under the name `"chatbot"` — the chat
-  service filters the token stream on that name) — the actual LLM turn (model set by
-  `MODEL_NAME` in `llm_client.py`). Builds a system message from `memory_context` + running
-  `summary`, trims the sent history to `MAX_TOKENS` (doesn't touch what's persisted).
+  service filters the token stream on that name, which is also what keeps the assessor's and
+  dispatcher's LLM output from reaching the client) — the actual LLM turn (model set by
+  `MODEL_NAME` in `llm_client.py`). Builds the system message from `prompts/system_prompt.txt` +
+  `prompts/response_prompt.txt` (the *current section's* full text) + `memory_context` + running
+  `summary`; on the turn a section change actually happened it also appends a "you have just entered
+  this part, open it naturally" sentence (added in Python, not templated). Trims the sent history to
+  `MAX_TOKENS` (doesn't touch what's persisted).
 - `ingest_memory` (`nodes/memory_hook.py`) — runs the encoding gate over both the user's message
   and the assistant's reply, storing whatever it admits.
 - `summarize` (`nodes/summarize.py`, conditional, fires past `SUMMARIZE_AFTER_TOKENS` in
@@ -107,7 +153,38 @@ Postgres per `thread_id` via `PostgresSaver` so conversations survive restarts. 
   dropping content.
 
 Both `ingest_memory` and `summarize` run synchronously in-graph (see the TODOs) — every request
-pays their cost before the response can close; not yet moved to a background task.
+pays their cost before the response can close; not yet moved to a background task. Likewise every
+turn after the first now pays one non-streamed assessor LLM call *before* the reply's first token
+(plus a dispatcher call on turns that leave a branching section).
+
+**Ending a session**: `session_done` is sticky — once the terminal section completes, every later
+turn skips the LLM, routes to `END`, and produces no reply (no `chatbot` chunks, nothing for
+`ingest_memory`/`summarize` to run on). `retrieve_memories` still runs first on those turns. The chat
+service (`features/chat/service.py`) hasn't been taught about this: it just streams nothing and
+archives nothing, and the frontend isn't told the session ended.
+
+**Prompts and LLM helpers** (`prompts/*.txt`, `llm_client.py`):
+- `prompts/` holds plain-text prompts — `system_prompt`, `response_prompt`, `assessment_prompt`,
+  `dispatch_prompt` (no Jinja, no new dependency). `render_prompt(name, **ctx)` reads
+  `prompts/<name>` (extension included) and fills `$name`/`${name}` with `string.Template.substitute`,
+  so a missing variable raises `KeyError` instead of rendering blank. A literal dollar sign in a prompt
+  file must be written `$$`; JSON braces need no escaping; substituted *values* are never re-scanned.
+- `llm` is the streaming chat model. `judge_llm` is a second client, same model, `temperature=0`,
+  for the assessor and dispatcher (a `.bind(temperature=0)` would be lost by `with_structured_output`).
+- `invoke_structured(model, schema, prompt)` tries native structured output first and falls back to
+  prompting for JSON and parsing it into the Pydantic model, with one retry that says what was wrong;
+  it raises `StructuredOutputError` if neither works. Native structured output (`json_schema`,
+  `function_calling`, `json_mode`) works on `openai/gpt-oss-120b` via AICredits (probed 2026-09-20), so
+  the fallback normally never runs. Nodes take the model as an argument from their own module-level
+  name (`judge_llm`), which is what tests patch.
+- `format_transcript` renders *all* persisted human/AI messages as `Patient:`/`Therapist:` lines for
+  the assessor and dispatcher; they get it as prompt text, not as chat roles. There is deliberately no
+  window: `summarize` already bounds the raw history (≈`SUMMARIZE_AFTER_TOKENS`, ~6k tokens), and a
+  narrower cap (it used to be the last 12) hid early tasks — Task 1a's welcome scrolled out of view, so
+  the assessor concluded it never happened and Section 1 could never complete
+  (`test_a_long_section_keeps_its_opening_visible_to_the_assessor`). Once `summarize` has pruned
+  the history, only the last 2 raw messages plus `summary` remain; the assessor's prompt includes the
+  summary, the dispatcher's does not.
 
 **Database access**: sync SQLAlchemy 2.0 over psycopg3. `app/db/base.py` has `Base` and the shared
 column mixins (uuid PK, `created_at`, `updated_at`); `app/db/session.py` has the engine and
@@ -119,17 +196,23 @@ can't run on SQLAlchemy. Together they can hold ~30 connections — mind the man
 `max_connections`.
 
 **Schema**: `users`, `refresh_tokens` (`features/auth/models.py`), `therapy_sessions`, `messages`,
-`section_transitions` (`features/sessions/models.py`), `memories` (`memory/semantic/models.py`).
+`section_transitions` (`features/sessions/models.py`), `memories` (`memory/episodic/models.py`).
 All ids are UUIDs. `therapy_sessions.script_id`/`current_section` are NOT NULL but no scripts
-feature exists, so `ensure_session` fills them from `app/shared/constants.py` when a thread's
-first message creates the row.
+feature exists, so `ensure_session` fills them from `app/shared/constants.py` (`"cbt_intro_v1"` /
+`"intro"`) when a thread's first message creates the row. Those stand-ins are not the graph's
+sections: the real `current_section` (`"Section 1"`..`"Section 8"`) and `transitions` live only in the
+LangGraph checkpoint — nothing writes them back to `therapy_sessions` or `section_transitions` yet.
 
-**Long-term memory** (`app/memory/`, ported from a separate "TrueMemory" project):
+**Long-term memory** (`app/memory/episodic/`): all of it is code ported from a separate "TrueMemory"
+project, which is an episodic memory (it stores what was said, per user). It lives flat in
+`episodic/`; the other `app/memory/` entries (`graph/`, `working_memory.py`) are placeholders.
+`episodic/store.py` is also a docstring-only placeholder, not part of the working code below.
 
-- `semantic/embeddings.py` — shared `fastembed` (ONNX) `all-MiniLM-L6-v2` model, 384-dim. That
+- `embeddings.py` — shared `fastembed` (ONNX) `all-MiniLM-L6-v2` model, 384-dim. That
   dimension is baked into the `memories.embedding` column type (`Vector(384)`) — swapping models
   needs a migration.
-- `semantic/vector_store.py` — the ORM read/write path for `memories`. `search_lexical` (L1) is
+- `models.py` — the `Memory` ORM model (the `memories` table).
+- `vector_store.py` — the ORM read/write path for `memories`. `search_lexical` (L1) is
   core Postgres full-text search: `plainto_tsquery` with `&` swapped for `|` (any-term match, like
   the old ParadeDB `match()`), ranked by `ts_rank_cd` over the generated `content_tsv` column
   (GIN index). It is not BM25 — pg_search isn't installable on managed Postgres. `search_dense`
@@ -158,7 +241,7 @@ ids are all UUIDs; bad ones get a 422. Not-found/forbidden errors are `AppError`
   (all before streaming starts, so failures are real HTTP errors), then streams the assistant's
   reply as plain text (`stream_mode="messages"`, filtered to chunks from the `"chatbot"` node so
   `summarize`'s internal LLM call never leaks to the client) and archives the assembled reply
-  verbatim. `thread_id` (client-generated) becomes `therapy_sessions.id`. The `messages` table is
+  verbatim (an empty reply — a finished session — is not archived). `thread_id` (client-generated) becomes `therapy_sessions.id`. The `messages` table is
   scrollback only, never read back by the graph — distinct from the LangGraph checkpoint.
 - `GET /sessions` — a user's threads, most recently active first.
 - `GET /messages` — cursor-paginated scrollback (`before` = the id of the oldest message the client

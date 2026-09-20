@@ -1,8 +1,8 @@
 """Run a mock student's messages through the full True Memory pipeline for real.
 
 Drives the actual compiled graph from app/orchestration/graph.py rather than reimplementing its
-retrieve_memories/chatbot/ingest_memory logic here -- so retrieval, the real
-LLM call, and the encoding gate all run exactly as they would in
+retrieve_memories/assess_completion/chatbot/ingest_memory logic here -- so retrieval, the script
+assessor, the real LLM call, and the encoding gate all run exactly as they would in
 production, on both message roles. The assistant's replies are genuine LLM
 output, not scripted text: the "does the gate correctly handle assistant
 messages too" question gets tested against what the bot actually says, not
@@ -16,7 +16,8 @@ compare against a scripted expectation for the assistant side.
 
 Requires:
 - The database migrated (`uv run alembic upgrade head`) and reachable via DATABASE_URL
-- AICREDITS_API_KEY set -- this makes one real LLM API call per message
+- AICREDITS_API_KEY set -- this makes real LLM API calls per message: the reply, plus (from the
+  second message on) the script assessor, plus a dispatcher call when a branching section ends
 
 Run (from the "backend" directory):
     uv run python -m scripts.test_true_memory
@@ -32,27 +33,42 @@ someone who wants to see True Memory actually working end to end.
 
 import uuid
 
+from langchain_core.messages import AIMessage
 from sqlalchemy import delete, select
 
 from app.db.session import session_scope
-from app.memory.retriever import retrieve
-from app.memory.semantic.models import Memory
+from app.memory.episodic.models import Memory
+from app.memory.episodic.retriever import retrieve
 from app.orchestration.graph import graph
 from scripts.seed_dev_user import ensure_user
 
 # Throwaway ids, distinct from anything real, so this is safe to re-run.
 # memories.user_id is a foreign key to users, so the test user is a real (throwaway) row.
 TEST_USER_ID = "00000000-0000-4000-8000-0000000000aa"
-TEST_THREAD_ID = "test-student-mock-thread-1"
+# A new thread every run: the graph's checkpoint carries the script position (current_section),
+# so a fixed id would make the next run start wherever the last one stopped. (Each run leaves its
+# checkpoint rows behind in the DB; only the memories are reset.)
+TEST_THREAD_ID = str(uuid.uuid4())
+CONFIG = {"configurable": {"thread_id": TEST_THREAD_ID, "user_id": TEST_USER_ID}}
 
 # Three fake sessions with a burnt-out college student, grouped so the printed
 # output can visually separate them. Notes mark what each USER message is meant
 # to demonstrate on the gate -- there's no equivalent list for assistant
 # messages, since we don't write those; the LLM does.
+#
+# The therapist follows a script (orchestration/script.json) and waits on it: it won't leave
+# Section 1 until the student has given a name and has no more questions. Three turns exist only
+# to drive the script forward ("script:" notes); what the gate does with them isn't asserted. The
+# rest answer whatever the therapist happens to be asking at that point, so how far the script
+# gets is up to the assessor -- the trace prints the position after every turn.
 MOCK_SESSIONS = [
     ("Session 1 -- establishing facts", [
         ("Hey, I guess I'm here because I've been feeling really burnt out with school lately.",
          "opening message -- store is empty, novelty should be maxed out"),
+        ("Sam is fine, you can call me Sam.",
+         "script: answers the name question (Task 1b)"),
+        ("No, I don't have any questions. Let's get started.",
+         "script: no questions about the service (Task 1c) -- Section 1 should complete"),
         ("I'm a junior majoring in computer science and this semester has just been brutal.",
          "salient fact -- should encode"),
         ("I'm taking five classes plus a part-time job at the campus library.",
@@ -65,6 +81,9 @@ MOCK_SESSIONS = [
          "salient, establishes the job fact later sessions will build on"),
         ("ok",
          "noise -- should be skipped"),
+        ("I'd rather talk through what's going on first, before any exercises.",
+         "script: picks 'explore my problem' over a CBT exercise (Task 2c) -- Section 2 should "
+         "hand off to Section 3"),
     ]),
     ("Session 2 -- a restatement, a marker-bypassed correction, more new facts", [
         ("I'm a junior majoring in computer science and this semester has just been brutal.",
@@ -133,12 +152,20 @@ def reset_test_data():
 def send_turn(text: str) -> str:
     """Send one user message through the real graph; return the assistant's reply.
 
-    retrieve_memories, chatbot, and ingest_memory all run as they would for a
+    retrieve_memories, assess_completion, chatbot, and ingest_memory all run as they would for a
     real request -- this isn't a simulation of the pipeline, it IS the pipeline.
     """
-    config = {"configurable": {"thread_id": TEST_THREAD_ID, "user_id": TEST_USER_ID}}
-    result = graph.invoke({"messages": [{"role": "user", "content": text}]}, config=config)
-    return result["messages"][-1].content
+    result = graph.invoke({"messages": [{"role": "user", "content": text}]}, config=CONFIG)
+    last = result["messages"][-1]
+    # A finished session ends the graph without a reply, leaving the user's own message last.
+    return last.content if isinstance(last, AIMessage) else "(no reply -- the session has ended)"
+
+
+def script_position() -> str:
+    """Which script section the thread is in now, straight from the graph's checkpoint."""
+    values = graph.get_state(CONFIG).values
+    section = values.get("current_section", "?")
+    return f"{section} (session ended)" if values.get("session_done") else section
 
 
 def print_stored_memories() -> None:
@@ -185,8 +212,8 @@ if __name__ == "__main__":
     print("# True Memory -- Full Pipeline Trace\n")
     print(
         "Drives the real LangGraph pipeline end to end for one mock student: every "
-        "turn below runs through the actual `retrieve_memories -> chatbot -> "
-        "ingest_memory` graph from `app/orchestration/graph.py`, not a simulation of it. The "
+        "turn below runs through the actual `retrieve_memories -> assess_completion -> "
+        "chatbot -> ingest_memory` graph from `app/orchestration/graph.py`, not a simulation of it. The "
         "assistant's replies are genuine LLM output, so exact wording (and therefore "
         "what the encoding gate does with it) varies run to run.\n"
     )
@@ -208,6 +235,8 @@ if __name__ == "__main__":
             print(f"> _{note}_\n")
             print("> 🧠 **Juno**")
             print(_blockquote(reply))
+            print(">")
+            print(f"> _script position after this turn: **{script_position()}**_")
             print()
         print("---\n")
 
@@ -222,7 +251,7 @@ if __name__ == "__main__":
     print(
         "Each query below is fused from two independent rankings -- full-text "
         "lexical search (L1) and pgvector cosine similarity (L2) -- via Reciprocal Rank "
-        "Fusion (`RRF_K=60`, see `app/memory/retriever.py`). The RRF score is "
+        "Fusion (`RRF_K=60`, see `app/memory/episodic/retriever.py`). The RRF score is "
         "`sum(1 / (60 + rank))` across whichever list(s) a memory appeared in, so a "
         "memory both searches agree on outranks one that only tops a single list. "
         "This is the same `retrieve()` call `retrieve_memories` makes on every real "

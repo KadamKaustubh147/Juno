@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DATABASE_URL = os.environ["DATABASE_URL"]
-AICREDITS_API_KEY = os.environ["AICREDITS_API_KEY"]
+OPENROUTER_API_KEY = os.environ["OPENROUTER_API_KEY"]
 # Signs the access tokens (core/auth/jwt.py, which refuses to import without it). Tokens carry
 # no expiry, so anyone holding this can mint a valid token for any user forever -- keep it long
 # and random; rotating it invalidates every token at once. Not required for alembic or the CLI

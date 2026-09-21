@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type KeyboardEvent } from 'react'
 
 type Props = {
   /** a reply is streaming: typing is fine, sending waits */
@@ -19,6 +19,18 @@ export function Composer({ disabled, ended, onSend }: Props) {
     setDraft('')
   }
 
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    // Let the textarea handle Shift+Enter so it inserts a newline. A plain
+    // Enter sends the message, matching the previous single-line composer.
+    if (e.key !== 'Enter' || e.shiftKey) return
+
+    e.preventDefault()
+    const text = draft.trim()
+    if (!text || disabled) return
+    onSend(text)
+    setDraft('')
+  }
+
   if (ended) {
     return (
       <footer className="border-t border-line px-4 pt-4 pb-5 text-center text-sm text-muted md:px-6">
@@ -29,12 +41,14 @@ export function Composer({ disabled, ended, onSend }: Props) {
 
   return (
     <form onSubmit={submit} className="flex gap-2.5 border-t border-line px-4 pt-4 pb-5 md:px-6">
-      <input
+      <textarea
         value={draft}
         onChange={(e) => setDraft(e.target.value)}
+        onKeyDown={handleKeyDown}
+        rows={1}
         placeholder="Type a message"
         aria-label="Message"
-        className="flex-1 rounded-full bg-cream px-5 py-3.5 text-sm text-ink placeholder:text-muted"
+        className="flex-1 resize-none rounded-3xl bg-cream px-5 py-3.5 text-sm text-ink placeholder:text-muted"
       />
       <button
         type="submit"

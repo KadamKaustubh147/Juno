@@ -5,7 +5,7 @@ import pytest
 # app.config reads these at import time. Real values (from .env) win; these only keep a checkout
 # without a .env importable. Nothing here connects to a database or an LLM.
 os.environ.setdefault("DATABASE_URL", "postgresql://user:password@127.0.0.1:1/unused")
-os.environ.setdefault("AICREDITS_API_KEY", "unused")
+os.environ.setdefault("OPENROUTER_API_KEY", "unused")
 
 from app.orchestration.nodes import assess_completion, generate_response, select_next_section  # noqa: E402
 from tests.unit.orchestration.fakes import ForbiddenLLM  # noqa: E402

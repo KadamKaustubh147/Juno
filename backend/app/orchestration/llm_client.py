@@ -1,5 +1,5 @@
 
-"""The chat model, wired to an OpenAI-compatible endpoint (AICredits), plus the prompt and
+"""The chat model, wired to OpenRouter (an OpenAI-compatible endpoint), plus the prompt and
 structured-output helpers the script-driven nodes share."""
 
 import json
@@ -12,7 +12,7 @@ from jinja2 import Environment, FileSystemLoader, StrictUndefined
 from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
-from app.config import AICREDITS_API_KEY
+from app.config import OPENROUTER_API_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +26,29 @@ logger = logging.getLogger(__name__)
 # mlflow.langchain.autolog()
 
 MODEL_NAME = "openai/gpt-oss-120b"
+
+# Without these the OpenAI SDK's defaults apply: a 600s (10 minute) timeout and 2 retries, so a
+# stalled request from the provider hangs the whole turn for 10+ minutes before anything fails.
+# The timeout is per read (httpx), so a reply that keeps streaming tokens is not cut off; it only
+# fires when nothing arrives for this long. One retry covers a transient blip without tripling the wait.
+LLM_TIMEOUT_SECONDS = 60
+LLM_MAX_RETRIES = 1
+
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+# OpenRouter routes a model across several providers by default. Pin gpt-oss-120b to Crusoe's bf16
+# endpoint: `only` restricts routing to that endpoint, and `allow_fallbacks: False` returns the
+# upstream error instead of silently moving to another provider when Crusoe is unavailable.
+# Sent as extra request-body fields (`extra_body`), since the OpenAI client has no such parameter.
+OPENROUTER_PROVIDER = {"only": ["crusoe/bf16"], "allow_fallbacks": False}
+
 llm = ChatOpenAI(
     model=MODEL_NAME,
-    base_url="https://aicredits.in/v1",
-    api_key=AICREDITS_API_KEY,
+    base_url=OPENROUTER_BASE_URL,
+    api_key=OPENROUTER_API_KEY,
+    extra_body={"provider": OPENROUTER_PROVIDER},
+    timeout=LLM_TIMEOUT_SECONDS,
+    max_retries=LLM_MAX_RETRIES,
 )
 
 # For the assessor/dispatcher, which classify rather than converse: same model and endpoint,
@@ -37,9 +56,12 @@ llm = ChatOpenAI(
 # `llm.bind(temperature=0)` because a binding is lost when `with_structured_output` wraps the model.
 judge_llm = ChatOpenAI(
     model=MODEL_NAME,
-    base_url="https://aicredits.in/v1",
-    api_key=AICREDITS_API_KEY,
+    base_url=OPENROUTER_BASE_URL,
+    api_key=OPENROUTER_API_KEY,
+    extra_body={"provider": OPENROUTER_PROVIDER},
     temperature=0,
+    timeout=LLM_TIMEOUT_SECONDS,
+    max_retries=LLM_MAX_RETRIES,
 )
 
 PROMPTS_DIR = Path(__file__).parent / "prompts"

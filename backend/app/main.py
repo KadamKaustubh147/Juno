@@ -7,6 +7,8 @@ Then POST /auth/register, POST /sessions, and POST /chat (the reply streams back
 Server-Sent Events) -- or browse the interactive docs at http://localhost:8000/docs
 """
 
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -15,6 +17,11 @@ from app.features.auth.router import router as auth_router
 from app.features.chat.router import router as chat_router
 from app.features.sessions.router import router as sessions_router
 from app.features.users.router import router as users_router
+
+# uvicorn only configures its own loggers, so without this the app's INFO logs (the per-node
+# timings in graph_builder) are dropped and only WARNING and above reach the console.
+logging.basicConfig(level=logging.WARNING, format="%(levelname)s:     %(name)s: %(message)s")
+logging.getLogger("app").setLevel(logging.INFO)
 
 app = FastAPI(title="AI Therapist Chatbot")
 

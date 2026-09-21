@@ -15,7 +15,7 @@ See `backend/README.md` for how the backend is structured, and
 - A PostgreSQL database with the `pgvector` extension available -- a managed one such as
   Aiven works (no other extensions are needed)
 - An API key for an OpenAI-compatible LLM endpoint (this repo currently points at
-  `https://aicredits.in/v1`, model `openai/gpt-oss-120b` -- see `backend/app/orchestration/llm_client.py`)
+  `https://openrouter.ai/api/v1`, pinned to the Crusoe `crusoe/bf16` endpoint, model `openai/gpt-oss-120b` -- see `backend/app/orchestration/llm_client.py`)
 - Optional: Docker, only for the `pgweb` DB browser in `backend/docker-compose.yml`
 
 ## 1. Backend
@@ -27,7 +27,7 @@ cd backend
 Create `.env`:
 
 ```
-AICREDITS_API_KEY=your_key_here
+OPENROUTER_API_KEY=your_key_here
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require
 JWT_SECRET=<long random string>   # e.g. `python -c "import secrets; print(secrets.token_urlsafe(48))"`
 ```

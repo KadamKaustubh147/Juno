@@ -16,7 +16,7 @@ compare against a scripted expectation for the assistant side.
 
 Requires:
 - The database migrated (`uv run alembic upgrade head`) and reachable via DATABASE_URL
-- AICREDITS_API_KEY set -- this makes real LLM API calls per message: the reply, plus (from the
+- OPENROUTER_API_KEY set -- this makes real LLM API calls per message: the reply, plus (from the
   second message on) the script assessor, plus a dispatcher call when a branching section ends
 
 Run (from the "backend" directory):

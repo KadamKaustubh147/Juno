@@ -27,7 +27,7 @@ uv run python -m scripts.seed_dev_user     # optional: the dev user the CLI/memo
 
 Requires a `.env` with:
 ```
-AICREDITS_API_KEY=...
+OPENROUTER_API_KEY=...
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require
 JWT_SECRET=...   # signs access tokens; only the server needs it (core/auth/jwt.py refuses to import without it)
 ```
@@ -35,7 +35,7 @@ JWT_SECRET=...   # signs access tokens; only the server needs it (core/auth/jwt.
 The database is a managed Postgres (Aiven) that only needs the `pgvector` extension; there is
 no local database container. `postgres://` and `postgresql://` URIs both work — `app/config.py`
 derives `SQLALCHEMY_DATABASE_URL` (`postgresql+psycopg://…`) from `DATABASE_URL`. Both env vars
-are read at import time, so `alembic` needs `AICREDITS_API_KEY` set too.
+are read at import time, so `alembic` needs `OPENROUTER_API_KEY` set too.
 
 The database must be reachable before the app starts: importing `app.core.db` opens a psycopg
 pool and `app/orchestration/checkpointer.py` calls `checkpointer.setup()` at import time, so
@@ -93,7 +93,7 @@ scripts, not assertions:
 
 ```sh
 uv run python -m scripts.test_encoding_gate   # no DB needed; prints gate scores for sample messages
-uv run python -m scripts.test_true_memory     # needs the migrated DB + AICREDITS_API_KEY; drives the real graph
+uv run python -m scripts.test_true_memory     # needs the migrated DB + OPENROUTER_API_KEY; drives the real graph
 uv run python -m scripts.query <user_id> "<query>"   # ad-hoc retrieve() against stored memories
 ```
 
@@ -173,11 +173,15 @@ with `message_id: null` and archive no reply.
   file must be written `$$`; JSON braces need no escaping; substituted *values* are never re-scanned.
 - `llm` is the streaming chat model. `judge_llm` is a second client, same model, `temperature=0`,
   for the assessor and dispatcher (a `.bind(temperature=0)` would be lost by `with_structured_output`).
+  Both go through OpenRouter (`OPENROUTER_API_KEY`), pinned to the Crusoe `crusoe/bf16` endpoint via
+  `extra_body={"provider": {"only": [...], "allow_fallbacks": False}}` (`OPENROUTER_PROVIDER`): if Crusoe
+  is down the turn errors rather than routing elsewhere. Both also have a 60s timeout and 1 retry
+  (the OpenAI SDK default is a 600s timeout).
 - `invoke_structured(model, schema, prompt)` tries native structured output first and falls back to
   prompting for JSON and parsing it into the Pydantic model, with one retry that says what was wrong;
   it raises `StructuredOutputError` if neither works. Native structured output (`json_schema`,
-  `function_calling`, `json_mode`) works on `openai/gpt-oss-120b` via AICredits (probed 2026-09-20), so
-  the fallback normally never runs. Nodes take the model as an argument from their own module-level
+  `function_calling`, `json_mode`) worked on `openai/gpt-oss-120b` via AICredits (probed 2026-09-20; not yet
+  re-probed on OpenRouter/Crusoe), so the fallback normally never runs. Nodes take the model as an argument from their own module-level
   name (`judge_llm`), which is what tests patch.
 - `format_transcript` renders *all* persisted human/AI messages as `Patient:`/`Therapist:` lines for
   the assessor and dispatcher; they get it as prompt text, not as chat roles. There is deliberately no

@@ -4,7 +4,7 @@
 backend/
 ├── app/
 │   ├── main.py            # FastAPI app: CORS, router wiring, /health
-│   ├── config.py          # env settings (DATABASE_URL, AICREDITS_API_KEY, JWT_SECRET)
+│   ├── config.py          # env settings (DATABASE_URL, OPENROUTER_API_KEY, JWT_SECRET)
 │   ├── core/              # auth/ (jwt, password hashing), security.py (bearer-token dependency),
 │   │                      #   exceptions.py, db.py (psycopg pool for the LangGraph checkpointer only)
 │   ├── db/                # SQLAlchemy Base/mixins, engine + session, Alembic migrations/
@@ -33,7 +33,7 @@ model and `core/auth/refresh_tokens.py` is a placeholder: there are no refresh t
 `.env` needs:
 
 ```
-AICREDITS_API_KEY=...
+OPENROUTER_API_KEY=...
 DATABASE_URL=postgresql://user:password@host:port/dbname?sslmode=require   # e.g. Aiven Postgres
 JWT_SECRET=...                                                              # signs access tokens; keep it long and random
 ```
@@ -198,7 +198,7 @@ scripts, not assertions:
 
 ```sh
 uv run python -m scripts.test_encoding_gate   # no DB needed; prints gate scores for sample messages
-uv run python -m scripts.test_true_memory      # needs the migrated DB + AICREDITS_API_KEY; drives the real graph
+uv run python -m scripts.test_true_memory      # needs the migrated DB + OPENROUTER_API_KEY; drives the real graph
 ```
 
 `test_encoding_gate.py` runs a handful of hand-picked example messages (noise, an exact
